@@ -12,6 +12,7 @@ import os
 import re
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 from bs4 import BeautifulSoup
@@ -20,6 +21,14 @@ from bs4 import BeautifulSoup
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+# Property24 блокирует IP дата-центров (GitHub Actions) — 503 после первого запроса.
+# Чтобы обойти, ходим через сервис с ротацией жилых IP. Задай ОДИН из секретов:
+#   SCRAPER_API_KEY — ключ ScraperAPI (https://www.scraperapi.com, есть бесплатный тариф)
+#   SCRAPE_PROXY    — либо URL обычного http/https-прокси вида http://user:pass@host:port
+# Если ни один не задан — бот ходит напрямую (на Actions будет ловить 503).
+SCRAPER_API_KEY = os.environ.get("SCRAPER_API_KEY", "")
+SCRAPE_PROXY = os.environ.get("SCRAPE_PROXY", "")
 
 MAX_PRICE = 20000          # максимум ZAR / месяц
 MIN_BEDROOMS = 1
@@ -90,10 +99,24 @@ RETRY_STATUS = {429, 503, 502, 504}
 
 
 def http_get(url: str, attempts: int = 4):
-    """GET с ретраями и нарастающей паузой на 503/429. Возвращает Response или None."""
+    """GET с ретраями и нарастающей паузой на 503/429. Возвращает Response или None.
+    При заданном SCRAPER_API_KEY / SCRAPE_PROXY ходит через сервис ротации IP."""
+    request_url = url
+    proxies = None
+    timeout = 25
+    if SCRAPER_API_KEY:
+        # ScraperAPI сам крутит IP; country_code=za — ЮАР-адреса; render=false (нам не нужен JS)
+        request_url = (
+            "https://api.scraperapi.com/?"
+            f"api_key={SCRAPER_API_KEY}&country_code=za&url={quote(url, safe='')}"
+        )
+        timeout = 70  # прокси-сервису нужно больше времени
+    elif SCRAPE_PROXY:
+        proxies = {"http": SCRAPE_PROXY, "https": SCRAPE_PROXY}
+
     for i in range(attempts):
         try:
-            resp = SESSION.get(url, timeout=25)
+            resp = SESSION.get(request_url, timeout=timeout, proxies=proxies)
         except requests.RequestException as e:
             if i < attempts - 1:
                 time.sleep(6 * (i + 1))
