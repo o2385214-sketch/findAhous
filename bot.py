@@ -1,7 +1,8 @@
 """
 Cape Town Rental Bot
-Проверяет Property24 и PrivateProperty на новые объявления в безопасных районах
-рядом с ночным клубом Mavericks (радиус ~20 минут без пробок) и шлёт их в Telegram.
+Проверяет Property24 на новые объявления по ВСЕМУ Кейптауну (только жилые категории:
+квартиры, дома, таунхаусы) и шлёт подходящие в Telegram. Опасные районы (townships,
+Mitchell's Plain и т.п.) исключаются по чёрному списку DANGEROUS_SUBURBS.
 
 Настройки — ниже, в блоке CONFIG.
 """
@@ -30,16 +31,39 @@ MAX_PARKING = 2
 
 REQUIRED_LEASE_MONTHS = 12   # None = не проверять срок аренды
 FURNISHED_ONLY = True        # слать только меблированные (если статус не удалось определить — не отбрасываем)
+REQUIRE_PARKING = True       # слать только если парковка определена и в диапазоне MIN/MAX_PARKING
 PRIORITY_TYPES = ("house", "townhouse")  # такие объявления помечаются приоритетными и идут первыми
 
-# Безопасные районы в ~20 минутах без пробок от Mavericks (Barrack St, City Centre).
-# Комбинированный поиск "to-rent" включает квартиры, дома и таунхаусы.
-PROPERTY24_SEARCHES = {
-    "Green Point": "https://www.property24.com/to-rent/green-point/cape-town/western-cape/11017",
-    "Sea Point": "https://www.property24.com/to-rent/sea-point/cape-town/western-cape/11021",
-    "Vredehoek": "https://www.property24.com/to-rent/vredehoek/cape-town/western-cape/9166",
-    "City Centre": "https://www.property24.com/to-rent/cape-town-city-centre/cape-town/western-cape/9138",
-    "De Waterkant": "https://www.property24.com/to-rent/de-waterkant/cape-town/western-cape/9130",
+# Зона поиска — ВЕСЬ Кейптаун (код района 432), только жилые категории:
+# коммерция (офисы, склады, участки) сюда физически не попадает.
+# Сортировка "сначала новые" + проверяем первые PAGES_PER_SEARCH страниц каждой категории.
+CAPE_TOWN_SEARCHES = {
+    "apartment": "https://www.property24.com/apartments-to-rent/cape-town/western-cape/432",
+    "house":     "https://www.property24.com/houses-to-rent/cape-town/western-cape/432",
+    "townhouse": "https://www.property24.com/townhouses-to-rent/cape-town/western-cape/432",
+}
+SORT_NEWEST = "?sp=so%3dNewest"
+PAGES_PER_SEARCH = 2
+
+# Опасные районы Кейптауна (townships и высококриминальные зоны Cape Flats).
+# Совпадение по slug в URL объявления => объявление пропускается.
+# Список легко расширять: добавь slug строчными буквами, слова через дефис.
+# (Несколько пограничных районов — retreat/steenberg/grassy-park — включены на всякий
+#  случай ради безопасности; если считаешь их нормальными, просто удали из набора.)
+DANGEROUS_SUBURBS = {
+    # Mitchell's Plain и его части
+    "mitchells-plain", "mitchell-s-plain", "tafelsig", "beacon-valley", "lentegeur",
+    "portlands", "westridge", "eastridge", "rocklands", "woodlands", "strandfontein",
+    # Крупные townships
+    "khayelitsha", "nyanga", "gugulethu", "langa", "philippi", "crossroads",
+    "browns-farm", "samora-machel", "mfuleni",
+    # Cape Flats — высокий уровень преступности
+    "manenberg", "hanover-park", "heideveld", "bonteheuwel", "bishop-lavis",
+    "valhalla-park", "elsies-river", "factreton", "kensington", "delft", "wesbank",
+    "lavender-hill", "seawinds", "vrygrond", "capricorn",
+    # Южные/восточные пограничные
+    "ocean-view", "atlantis", "macassar", "blue-downs", "eerste-river", "scottsdene",
+    "retreat", "steenberg", "grassy-park",
 }
 
 SEEN_FILE = Path(__file__).parent / "seen_listings.json"
@@ -119,13 +143,24 @@ def parse_bathrooms(card) -> int:
 def parse_parking(card) -> int:
     text = card.get_text(" ", strip=True)
     # Property24 обычно указывает как "Parking" / "Garage" / "Parking Bay(s)"
-    match = re.search(r"(\d+)\s*(?:Parking|Garage)", text, re.IGNORECASE)
+    match = re.search(r"(\d+)\s*(?:Covered Parking|Parking|Garage)", text, re.IGNORECASE)
     if match:
         try:
             return int(match.group(1))
         except ValueError:
             return 0
     return 0
+
+
+def suburb_from_url(url: str) -> str:
+    """Достаёт slug района из ссылки на объявление:
+    .../to-rent/sea-point/cape-town/... -> 'sea-point'."""
+    m = re.search(r"/to-rent/([a-z0-9-]+)/cape-town/", url)
+    return m.group(1) if m else ""
+
+
+def prettify_suburb(slug: str) -> str:
+    return slug.replace("-", " ").title() if slug else "Cape Town"
 
 
 def fetch_details(url: str):
@@ -136,7 +171,7 @@ def fetch_details(url: str):
         resp.raise_for_status()
     except requests.RequestException as e:
         print(f"Ошибка запроса деталей {url}: {e}")
-        return {"lease_months": None, "furnished": None, "property_type": None}
+        return {"lease_months": None, "furnished": None, "property_type": None, "parking": None}
 
     text = BeautifulSoup(resp.text, "html.parser").get_text(" ", strip=True)
 
@@ -157,19 +192,30 @@ def fetch_details(url: str):
     if m:
         property_type = m.group(1).lower()
 
-    return {"lease_months": lease_months, "furnished": furnished, "property_type": property_type}
+    # парковка на странице объявления — запасной источник, если в карточке её не было
+    parking = None
+    m = re.search(r"(\d+)\s*(?:Covered Parking|Parking Bay|Parking|Garage)", text, re.IGNORECASE)
+    if m:
+        parking = int(m.group(1))
+
+    return {
+        "lease_months": lease_months,
+        "furnished": furnished,
+        "property_type": property_type,
+        "parking": parking,
+    }
 
 
 # ============== CORE ==============
 
 
-def fetch_listings(area: str, url: str):
+def fetch_page(category: str, url: str):
     results = []
     try:
         resp = requests.get(url, headers=HEADERS, timeout=20)
         resp.raise_for_status()
     except requests.RequestException as e:
-        print(f"[{area}] Ошибка запроса: {e}")
+        print(f"[{category}] Ошибка запроса {url}: {e}")
         return results
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -179,6 +225,13 @@ def fetch_listings(area: str, url: str):
         href = link.get("href", "")
         if not re.search(r"/\d{6,}$", href):
             continue  # это не карточка конкретного объявления, а ссылка на категорию
+
+        full_url = href if href.startswith("http") else f"https://www.property24.com{href}"
+
+        # Опасный район? — отсекаем сразу по slug из ссылки.
+        suburb_slug = suburb_from_url(full_url)
+        if suburb_slug in DANGEROUS_SUBURBS:
+            continue
 
         card = link.find_parent(["div", "li", "article"]) or link
         card_text = card.get_text(" ", strip=True)
@@ -192,22 +245,24 @@ def fetch_listings(area: str, url: str):
             continue
         if price > MAX_PRICE:
             continue
-        if bedrooms and not (MIN_BEDROOMS <= bedrooms <= MAX_BEDROOMS):
+        # число комнат ОБЯЗАТЕЛЬНО должно быть распознано и попадать в диапазон
+        # (bedrooms == 0 означает «не смогли определить» — такое больше не шлём)
+        if not (MIN_BEDROOMS <= bedrooms <= MAX_BEDROOMS):
             continue
         if bathrooms and not (MIN_BATHROOMS <= bathrooms <= MAX_BATHROOMS):
             continue
+        # парковку окончательно проверяем в run_once (там есть запасной источник — страница объявления)
         if parking and not (MIN_PARKING <= parking <= MAX_PARKING):
             continue
 
-        full_url = href if href.startswith("http") else f"https://www.property24.com{href}"
         listing_id = re.search(r"(\d{6,})$", href).group(1)
-
         title = link.get("title") or card_text[:80]
 
         results.append(
             {
                 "id": f"p24_{listing_id}",
-                "area": area,
+                "category": category,
+                "suburb": prettify_suburb(suburb_slug),
                 "price": price,
                 "bedrooms": bedrooms,
                 "bathrooms": bathrooms,
@@ -220,15 +275,29 @@ def fetch_listings(area: str, url: str):
     return results
 
 
+def fetch_listings(category: str, base_url: str):
+    """Первые PAGES_PER_SEARCH страниц категории, отсортированных «сначала новые»."""
+    results = []
+    for page in range(1, PAGES_PER_SEARCH + 1):
+        page_path = "" if page == 1 else f"/p{page}"
+        url = f"{base_url}{page_path}{SORT_NEWEST}"
+        results.extend(fetch_page(category, url))
+        time.sleep(1)
+    return results
+
+
 def run_once():
     seen = load_seen()
     candidates = []
+    seen_ids_this_run = set()  # объявление может встретиться в нескольких категориях — не дублируем
 
-    for area, url in PROPERTY24_SEARCHES.items():
-        listings = fetch_listings(area, url)
+    for category, base_url in CAPE_TOWN_SEARCHES.items():
+        listings = fetch_listings(category, base_url)
         for listing in listings:
-            if listing["id"] not in seen:
-                candidates.append(listing)
+            if listing["id"] in seen or listing["id"] in seen_ids_this_run:
+                continue
+            seen_ids_this_run.add(listing["id"])
+            candidates.append(listing)
         time.sleep(2)  # вежливая пауза между запросами
 
     new_listings = []
@@ -243,10 +312,18 @@ def run_once():
             seen.add(listing["id"])
             continue
 
+        # парковка: из карточки, а если там не было — со страницы объявления
+        parking = listing["parking"] or details["parking"] or 0
+        if REQUIRE_PARKING and not (MIN_PARKING <= parking <= MAX_PARKING):
+            seen.add(listing["id"])
+            continue
+        listing["parking"] = parking
+
         listing["lease_months"] = details["lease_months"]
         listing["furnished"] = details["furnished"]
-        listing["property_type"] = details["property_type"]
-        listing["priority"] = details["property_type"] in PRIORITY_TYPES if details["property_type"] else False
+        # тип: со страницы объявления, иначе — по категории поиска
+        listing["property_type"] = details["property_type"] or listing["category"]
+        listing["priority"] = listing["property_type"] in PRIORITY_TYPES
 
         new_listings.append(listing)
         seen.add(listing["id"])
@@ -265,7 +342,7 @@ def run_once():
             star = "⭐ " if listing["priority"] else ""
 
             text = (
-                f"{star}🏠 <b>{listing['area']}</b> · {type_str}\n"
+                f"{star}🏠 <b>{listing['suburb']}</b> · {type_str}\n"
                 f"💰 R{listing['price']:,}/мес · {bedrooms_str} · {bathrooms_str} · {parking_str}\n"
                 f"{furnished_str} · аренда {lease_str}\n"
                 f"{listing['title']}\n"
