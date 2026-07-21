@@ -232,7 +232,8 @@ def fetch_details(url: str):
     resp = http_get(url)
     if resp is None:
         print(f"Не получили детали {url}")
-        return {"lease_months": None, "furnished": None, "property_type": None, "parking": None}
+        return {"lease_months": None, "furnished": None, "property_type": None,
+                "parking": None, "bathrooms": None}
 
     text = BeautifulSoup(resp.text, "html.parser").get_text(" ", strip=True)
 
@@ -253,17 +254,24 @@ def fetch_details(url: str):
     if m:
         property_type = m.group(1).lower()
 
-    # парковка на странице объявления — запасной источник, если в карточке её не было
+    # парковка и санузлы на странице объявления — запасной источник,
+    # т.к. в карточке списка их обычно нет (там только цена и кол-во комнат)
     parking = None
     m = re.search(r"(\d+)\s*(?:Covered Parking|Parking Bay|Parking|Garage)", text, re.IGNORECASE)
     if m:
         parking = int(m.group(1))
+
+    bathrooms = None
+    m = re.search(r"(\d+(?:\.\d+)?)\s*Bathroom", text, re.IGNORECASE)
+    if m:
+        bathrooms = int(float(m.group(1)))
 
     return {
         "lease_months": lease_months,
         "furnished": furnished,
         "property_type": property_type,
         "parking": parking,
+        "bathrooms": bathrooms,
     }
 
 
@@ -404,6 +412,9 @@ def run_once():
             seen.add(listing["id"])
             continue
         listing["parking"] = parking
+
+        # санузлы: в карточке их обычно нет — берём со страницы объявления (для показа)
+        listing["bathrooms"] = listing["bathrooms"] or details["bathrooms"] or 0
 
         listing["lease_months"] = details["lease_months"]
         listing["furnished"] = details["furnished"]
