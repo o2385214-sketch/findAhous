@@ -31,6 +31,7 @@ SCRAPER_API_KEY = os.environ.get("SCRAPER_API_KEY", "")
 SCRAPE_PROXY = os.environ.get("SCRAPE_PROXY", "")
 
 MAX_PRICE = 20000          # максимум ZAR / месяц
+MIN_PRICE = 0              # минимум ZAR / месяц (0 = без нижней границы)
 MIN_BEDROOMS = 1
 MAX_BEDROOMS = 2
 MIN_BATHROOMS = 1
@@ -49,7 +50,7 @@ CONFIG_FILE = Path(__file__).parent / "config.json"
 
 
 def _apply_config():
-    global MAX_PRICE, MIN_BEDROOMS, MAX_BEDROOMS, MIN_BATHROOMS, MAX_BATHROOMS
+    global MAX_PRICE, MIN_PRICE, MIN_BEDROOMS, MAX_BEDROOMS, MIN_BATHROOMS, MAX_BATHROOMS
     global MIN_PARKING, MAX_PARKING, REQUIRE_PARKING, FURNISHED_ONLY, REQUIRED_LEASE_MONTHS
     if not CONFIG_FILE.exists():
         return
@@ -58,6 +59,7 @@ def _apply_config():
     except (json.JSONDecodeError, OSError):
         return
     MAX_PRICE = cfg.get("max_price", MAX_PRICE)
+    MIN_PRICE = cfg.get("min_price", MIN_PRICE)
     MIN_BEDROOMS = cfg.get("min_bedrooms", MIN_BEDROOMS)
     MAX_BEDROOMS = cfg.get("max_bedrooms", MAX_BEDROOMS)
     MIN_BATHROOMS = cfg.get("min_bathrooms", MIN_BATHROOMS)
@@ -375,7 +377,7 @@ def fetch_page(category: str, url: str):
     soup = BeautifulSoup(resp.text, "html.parser")
 
     anchors = soup.select("a[href*='/to-rent/']")
-    stats = {"cards": 0, "blocked": 0, "no_price": 0, "too_pricey": 0,
+    stats = {"cards": 0, "blocked": 0, "no_price": 0, "too_pricey": 0, "too_cheap": 0,
              "bedrooms": 0, "bathrooms": 0, "parking": 0, "passed": 0}
     samples = []
     seen_on_page = set()
@@ -417,6 +419,9 @@ def fetch_page(category: str, url: str):
         if price > MAX_PRICE:
             stats["too_pricey"] += 1
             continue
+        if price < MIN_PRICE:
+            stats["too_cheap"] += 1
+            continue
         # если число комнат В КАРТОЧКЕ известно и вне диапазона — сразу отсекаем;
         # если не распознано (0, напр. «Apartment»/«Studio») — добираем на детальной
         # странице в run_once, чтобы не терять валидные объявления без метки в карточке.
@@ -449,7 +454,7 @@ def fetch_page(category: str, url: str):
 
     print(f"[{category}] ссылок={len(anchors)} карточек={stats['cards']} "
           f"прошло={stats['passed']} | отсев: район={stats['blocked']} "
-          f"нет_цены={stats['no_price']} дорого={stats['too_pricey']} "
+          f"нет_цены={stats['no_price']} дорого={stats['too_pricey']} дёшево={stats['too_cheap']} "
           f"комнаты={stats['bedrooms']} санузлы={stats['bathrooms']} парковка={stats['parking']}")
     if stats["cards"] and not stats["passed"]:
         for s in samples:

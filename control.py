@@ -25,6 +25,7 @@ STATE_FILE = HERE / "tg_state.json"
 API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
 
 DEFAULTS = {
+    "min_price": 0,
     "max_price": 20000,
     "min_bedrooms": 1, "max_bedrooms": 2,
     "min_bathrooms": 1, "max_bathrooms": 2,
@@ -37,7 +38,8 @@ DEFAULTS = {
 HELP = (
     "🛠 <b>Команды настройки поиска</b>\n\n"
     "/статус — показать текущие настройки\n"
-    "/цена 25000 — потолок цены, ZAR/мес\n"
+    "/цена 20000 — потолок цены (ZAR/мес)\n"
+    "/цена 8000 20000 — диапазон цены (от и до)\n"
     "/комнаты 1 3 — спальни: от и до (можно одно число)\n"
     "/санузлы 1 2 — санузлы: от и до\n"
     "/парковка вкл — требовать парковку (1–2)\n"
@@ -86,12 +88,14 @@ def send(text):
 
 
 def status_text(cfg):
-    price = f"{cfg['max_price']:,}".replace(",", " ")
+    hi = f"{cfg['max_price']:,}".replace(",", " ")
+    lo = cfg.get("min_price", 0)
+    price = f"R{f'{lo:,}'.replace(',', ' ')}–{hi}/мес" if lo else f"до R{hi}/мес"
     park = f"{cfg['min_parking']}–{cfg['max_parking']}" if cfg["require_parking"] else "не важно"
     lease = f"{cfg['lease_months']} мес." if cfg["lease_months"] else "любой"
     return (
         "⚙️ <b>Текущие настройки поиска</b>\n"
-        f"💰 Цена до: R{price}/мес\n"
+        f"💰 Цена: {price}\n"
         f"🛏 Комнаты: {cfg['min_bedrooms']}–{cfg['max_bedrooms']}\n"
         f"🚿 Санузлы: {cfg['min_bathrooms']}–{cfg['max_bathrooms']}\n"
         f"🅿 Парковка: {park}\n"
@@ -130,10 +134,13 @@ def apply_command(text, cfg):
         return False, status_text(cfg)
 
     if cmd in ("цена", "price"):
-        if args and args[0].isdigit():
-            cfg["max_price"] = int(args[0])
+        nums = [int(a) for a in args if a.isdigit()]
+        if len(nums) >= 2:
+            cfg["min_price"], cfg["max_price"] = min(nums[0], nums[1]), max(nums[0], nums[1])
+        elif len(nums) == 1:
+            cfg["max_price"] = nums[0]  # одно число — только потолок, нижнюю границу не трогаем
         else:
-            return False, "Формат: /цена 25000"
+            return False, "Формат: /цена 20000  или  /цена 8000 20000"
     elif cmd in ("комнаты", "bedrooms", "bed"):
         cfg["min_bedrooms"], cfg["max_bedrooms"] = parse_range(args, cfg["min_bedrooms"], cfg["max_bedrooms"])
     elif cmd in ("санузлы", "bathrooms", "bath"):
