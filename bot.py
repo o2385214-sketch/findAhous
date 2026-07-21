@@ -43,7 +43,7 @@ CAPE_TOWN_SEARCHES = {
     "townhouse": "https://www.property24.com/townhouses-to-rent/cape-town/western-cape/432",
 }
 SORT_NEWEST = "?sp=so%3dNewest"
-PAGES_PER_SEARCH = 2
+PAGES_PER_SEARCH = 1   # 1 страницы «самых новых» хватает при ежечасном запуске; меньше запросов = меньше 503
 
 # Опасные районы Кейптауна (townships и высококриминальные зоны Cape Flats).
 # Совпадение по slug в URL объявления => объявление пропускается.
@@ -72,8 +72,44 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-    )
+    ),
+    "Accept": (
+        "text/html,application/xhtml+xml,application/xml;q=0.9,"
+        "image/avif,image/webp,*/*;q=0.8"
+    ),
+    "Accept-Language": "en-ZA,en;q=0.9",
+    "Referer": "https://www.property24.com/to-rent/cape-town/western-cape/432",
+    "Upgrade-Insecure-Requests": "1",
 }
+
+# Property24 ратлимитит IP дата-центров (GitHub Actions) и отдаёт 503/429.
+# Ходим через одну сессию (общий keep-alive/cookies) с ретраями и паузами.
+SESSION = requests.Session()
+SESSION.headers.update(HEADERS)
+RETRY_STATUS = {429, 503, 502, 504}
+
+
+def http_get(url: str, attempts: int = 4):
+    """GET с ретраями и нарастающей паузой на 503/429. Возвращает Response или None."""
+    for i in range(attempts):
+        try:
+            resp = SESSION.get(url, timeout=25)
+        except requests.RequestException as e:
+            if i < attempts - 1:
+                time.sleep(6 * (i + 1))
+                continue
+            print(f"  запрос не удался {url}: {e}")
+            return None
+        if resp.status_code in RETRY_STATUS and i < attempts - 1:
+            wait = 6 * (i + 1)
+            print(f"  {resp.status_code} для {url} — ретрай через {wait}s")
+            time.sleep(wait)
+            continue
+        if not resp.ok:
+            print(f"  {resp.status_code} для {url} — пропуск")
+            return None
+        return resp
+    return None
 
 # ============== HELPERS ==============
 
@@ -166,11 +202,9 @@ def prettify_suburb(slug: str) -> str:
 def fetch_details(url: str):
     """Заходит на страницу конкретного объявления и достаёт срок аренды,
     меблировку и тип недвижимости — этих данных нет в карточке списка."""
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        print(f"Ошибка запроса деталей {url}: {e}")
+    resp = http_get(url)
+    if resp is None:
+        print(f"Не получили детали {url}")
         return {"lease_months": None, "furnished": None, "property_type": None, "parking": None}
 
     text = BeautifulSoup(resp.text, "html.parser").get_text(" ", strip=True)
@@ -211,11 +245,9 @@ def fetch_details(url: str):
 
 def fetch_page(category: str, url: str):
     results = []
-    try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        print(f"[{category}] Ошибка запроса {url}: {e}")
+    resp = http_get(url)
+    if resp is None:
+        print(f"[{category}] не получили страницу {url}")
         return results
 
     soup = BeautifulSoup(resp.text, "html.parser")
@@ -282,7 +314,7 @@ def fetch_listings(category: str, base_url: str):
         page_path = "" if page == 1 else f"/p{page}"
         url = f"{base_url}{page_path}{SORT_NEWEST}"
         results.extend(fetch_page(category, url))
-        time.sleep(1)
+        time.sleep(3)
     return results
 
 
@@ -298,7 +330,7 @@ def run_once():
                 continue
             seen_ids_this_run.add(listing["id"])
             candidates.append(listing)
-        time.sleep(2)  # вежливая пауза между запросами
+        time.sleep(4)  # вежливая пауза между категориями, чтобы не ловить 503
 
     new_listings = []
     for listing in candidates:
