@@ -10,6 +10,7 @@
 
 import json
 import os
+import re
 from pathlib import Path
 
 import requests
@@ -45,7 +46,9 @@ HELP = (
     "/мебель вкл — только меблированные\n"
     "/мебель выкл — любые\n"
     "/срок 12 — срок аренды, мес. (0 — любой)\n"
-    "/сброс — вернуть настройки по умолчанию"
+    "/сброс — вернуть настройки по умолчанию\n\n"
+    "💡 Можно слать несколько команд одним сообщением — каждую с новой строки:\n"
+    "/цена 25000\n/комнаты 1 3\n/парковка выкл"
 )
 
 
@@ -108,27 +111,29 @@ def parse_range(args, cur_min, cur_max):
     return cur_min, cur_max
 
 
-def handle(text, cfg):
-    """Возвращает True, если config изменён (нужно сохранить/закоммитить)."""
+def apply_command(text, cfg):
+    """Обрабатывает ОДНУ команду, меняя cfg на месте.
+    Возвращает (changed, reply): changed — изменён ли config;
+    reply — отдельный текст для показа (статус/помощь/ошибка) или None
+    (при обычном успешном изменении итоговый статус шлём один раз в main)."""
     parts = text.strip().split()
+    if not parts:
+        return False, None
     cmd = parts[0].lower().lstrip("/").split("@")[0]
     args = parts[1:]
     on = {"вкл", "on", "да", "1"}
     off = {"выкл", "off", "нет", "0"}
 
     if cmd in ("start", "помощь", "help"):
-        send(HELP)
-        return False
+        return False, HELP
     if cmd in ("статус", "status"):
-        send(status_text(cfg))
-        return False
+        return False, status_text(cfg)
 
     if cmd in ("цена", "price"):
         if args and args[0].isdigit():
             cfg["max_price"] = int(args[0])
         else:
-            send("Формат: /цена 25000")
-            return False
+            return False, "Формат: /цена 25000"
     elif cmd in ("комнаты", "bedrooms", "bed"):
         cfg["min_bedrooms"], cfg["max_bedrooms"] = parse_range(args, cfg["min_bedrooms"], cfg["max_bedrooms"])
     elif cmd in ("санузлы", "bathrooms", "bath"):
@@ -142,31 +147,26 @@ def handle(text, cfg):
             cfg["require_parking"] = True
             cfg["min_parking"], cfg["max_parking"] = parse_range(args, cfg["min_parking"], cfg["max_parking"])
         else:
-            send("Формат: /парковка вкл | выкл | 1 2")
-            return False
+            return False, "Формат: /парковка вкл | выкл | 1 2"
     elif cmd in ("мебель", "furnished"):
         if args and args[0].lower() in off:
             cfg["furnished_only"] = False
         elif args and args[0].lower() in on:
             cfg["furnished_only"] = True
         else:
-            send("Формат: /мебель вкл  или  /мебель выкл")
-            return False
+            return False, "Формат: /мебель вкл  или  /мебель выкл"
     elif cmd in ("срок", "lease"):
         if args and args[0].isdigit():
             cfg["lease_months"] = int(args[0])
         else:
-            send("Формат: /срок 12  (0 — любой)")
-            return False
+            return False, "Формат: /срок 12  (0 — любой)"
     elif cmd in ("сброс", "reset"):
         cfg.clear()
         cfg.update(DEFAULTS)
     else:
-        send("Не понял команду. Список: /помощь")
-        return False
+        return False, f"Не понял команду «{parts[0]}». Список: /помощь"
 
-    send("✅ Готово, применю при следующем поиске.\n\n" + status_text(cfg))
-    return True
+    return True, None
 
 
 def main():
@@ -196,14 +196,29 @@ def main():
         if not msg:
             continue
         text = msg.get("text", "") or ""
-        if not text.startswith("/"):
+        if "/" not in text:
             continue
         chat_id = str(msg.get("chat", {}).get("id", ""))
         if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
             print(f"игнор команды из чужого чата {chat_id}")
             continue
-        if handle(text, cfg):
+
+        # одно сообщение может содержать несколько команд (по строкам или подряд):
+        # "/цена 25000 /комнаты 1 3" -> ["/цена 25000 ", "/комнаты 1 3"]
+        commands = re.findall(r"/[^/]+", text)
+        replies = []
+        msg_changed = False
+        for c in commands:
+            ch, rep = apply_command(c, cfg)
+            if ch:
+                msg_changed = True
+            if rep:
+                replies.append(rep)
+        if msg_changed:
             changed = True
+            replies.append("✅ Готово, применю при следующем поиске.\n\n" + status_text(cfg))
+        if replies:
+            send("\n\n".join(replies))
 
     if changed:
         save_json(CONFIG_FILE, cfg)
