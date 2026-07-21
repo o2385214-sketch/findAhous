@@ -279,6 +279,31 @@ def _num_near(text: str, labels) -> "int | None":
     return None
 
 
+def _parking_from_text(text: str) -> "int | None":
+    """Парковка со страницы. Число берём ТОЛЬКО рядом со специфичным словом
+    парковочного места, иначе ловится мусор из описания («24 hour security»).
+    Значение 1..9 (парковок больше не бывает)."""
+    patterns = [
+        r"Covered\s+Parking\s*:?\s*(\d{1,2})",
+        r"Parking\s+Bays?\s*:?\s*(\d{1,2})",
+        r"(\d{1,2})\s*Covered\s+Parking",
+        r"(\d{1,2})\s*Parking\s+Bays?",
+        r"(\d{1,2})\s*Carports?",
+        r"Carports?\s*:?\s*(\d{1,2})",
+        r"(\d{1,2})\s*Garages?",
+        r"Garages?\s*:?\s*(\d{1,2})",
+        # запасной общий «Parking N»: N только 1 цифра и НЕ «24 hour»
+        r"\bParking\s*:?\s*([1-9])(?!\d)(?!\s*(?:hour|hr|h\b|/|24))",
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            n = int(m.group(1))
+            if 0 < n <= 9:
+                return n
+    return None
+
+
 def fetch_details(url: str):
     """Со страницы объявления: тип, мебель, срок, санузлы, парковка, комнаты.
     Property24 верстает блок как «Метка Значение» (напр. «Bathrooms 1»,
@@ -324,8 +349,7 @@ def fetch_details(url: str):
 
     bathrooms = _num_near(text, ["Bathrooms", "Bathroom"])
     bedrooms = _num_near(text, ["Bedrooms", "Bedroom"])
-    parking = _num_near(text, ["Covered Parking", "Parking Bays", "Parking Bay",
-                               "Parking", "Carports", "Carport", "Garages", "Garage"])
+    parking = _parking_from_text(text)
 
     return {
         "lease_months": lease_months,
