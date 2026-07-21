@@ -168,10 +168,14 @@ def send_telegram(text: str) -> None:
 
 
 def parse_price(text: str):
-    match = re.search(r"R\s?([\d\s]+)", text)
+    # Цена вида "R 35 000" — число с пробелами-разделителями тысяч.
+    # ВАЖНО: не захватить следующее за ценой число (кол-во комнат):
+    # "R 35 000 2 Bedroom" -> 35000, а НЕ 350002. Поэтому берём либо группы
+    # ровно по 3 цифры (35 000), либо слитное 4-6-значное число (35000).
+    match = re.search(r"R\s*(\d{1,3}(?:[\s ]\d{3})+|\d{4,7})", text)
     if not match:
         return None
-    digits = match.group(1).replace(" ", "").replace("\xa0", "")
+    digits = re.sub(r"[\s ]", "", match.group(1))
     return int(digits) if digits.isdigit() else None
 
 
