@@ -254,14 +254,39 @@ def prettify_suburb(slug: str) -> str:
     return slug.replace("-", " ").title() if slug else "Cape Town"
 
 
+# Тип из блока "Type of Property"; жилые оставляем, эти слова = НЕжилое.
+RESIDENTIAL_TYPES = ("townhouse", "house", "apartment", "flat", "duplex", "cluster",
+                     "penthouse", "studio", "maisonette", "cottage", "loft", "villa",
+                     "simplex", "garden")
+COMMERCIAL_HINTS = ("commercial", "office", "retail", "industrial", "warehouse",
+                    "business", "factory", "vacant land", "medical", "showroom")
+
+_EMPTY_DETAILS = {
+    "lease_months": None, "furnished": None, "property_type": None,
+    "parking": None, "bathrooms": None, "bedrooms": None, "commercial": False,
+}
+
+
+def _num_near(text: str, labels) -> "int | None":
+    """Ищет число рядом с меткой — и «Метка N» (Bathrooms 1), и «N Метка» (1 Carport)."""
+    for w in labels:
+        m = re.search(rf"{w}\s*:?\s*(\d+)", text, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+        m = re.search(rf"(\d+)\s*{w}", text, re.IGNORECASE)
+        if m:
+            return int(m.group(1))
+    return None
+
+
 def fetch_details(url: str):
-    """Заходит на страницу конкретного объявления и достаёт срок аренды,
-    меблировку и тип недвижимости — этих данных нет в карточке списка."""
+    """Со страницы объявления: тип, мебель, срок, санузлы, парковка, комнаты.
+    Property24 верстает блок как «Метка Значение» (напр. «Bathrooms 1»,
+    «Parking 1 Carport», «Furnished No») — парсим именно так."""
     resp = http_get(url)
     if resp is None:
         print(f"Не получили детали {url}")
-        return {"lease_months": None, "furnished": None, "property_type": None,
-                "parking": None, "bathrooms": None}
+        return dict(_EMPTY_DETAILS)
 
     text = BeautifulSoup(resp.text, "html.parser").get_text(" ", strip=True)
 
@@ -270,29 +295,37 @@ def fetch_details(url: str):
     if m:
         lease_months = int(m.group(1))
 
+    # Тип недвижимости — значение после метки "Type of Property" до следующего поля.
+    type_raw = ""
+    m = re.search(
+        r"Type of Property\s*:?\s*([A-Za-z][A-Za-z/ ]{2,30}?)\s+"
+        r"(?:Floor|Erf|Bedroom|Bathroom|Parking|Garage|Carport|Listing|Pets|"
+        r"Furnished|Availab|Deposit|Rates|Levy|Levies|Points|Move|Lease|Size|Garden)",
+        text, re.IGNORECASE,
+    )
+    if m:
+        type_raw = m.group(1).strip().lower()
+    commercial = any(k in type_raw for k in COMMERCIAL_HINTS)
+    property_type = next((t for t in RESIDENTIAL_TYPES if t in type_raw), None)
+
+    # Мебель: поле "Furnished: Yes/No/Partially". Раньше был баг —
+    # «Furnished No» читалось как меблировано (по одному слову "furnished").
     furnished = None
-    lower = text.lower()
-    if "unfurnished" in lower:
-        furnished = False
-    elif "furnished" in lower:
-        furnished = True
-
-    property_type = None
-    m = re.search(r"Type of Property\D{0,10}?(House|Townhouse|Apartment|Flat|Duplex|Cluster)", text, re.IGNORECASE)
+    m = re.search(r"\bFurnished\s*:?\s*(Yes|No|Partial\w*|Optional)\b", text, re.IGNORECASE)
     if m:
-        property_type = m.group(1).lower()
+        v = m.group(1).lower()
+        furnished = True if v == "yes" else (False if v == "no" else None)
+    else:
+        low = text.lower()
+        if "unfurnished" in low:
+            furnished = False
+        elif "furnished" in low:
+            furnished = True
 
-    # парковка и санузлы на странице объявления — запасной источник,
-    # т.к. в карточке списка их обычно нет (там только цена и кол-во комнат)
-    parking = None
-    m = re.search(r"(\d+)\s*(?:Covered Parking|Parking Bay|Parking|Garage)", text, re.IGNORECASE)
-    if m:
-        parking = int(m.group(1))
-
-    bathrooms = None
-    m = re.search(r"(\d+(?:\.\d+)?)\s*Bathroom", text, re.IGNORECASE)
-    if m:
-        bathrooms = int(float(m.group(1)))
+    bathrooms = _num_near(text, ["Bathrooms", "Bathroom"])
+    bedrooms = _num_near(text, ["Bedrooms", "Bedroom"])
+    parking = _num_near(text, ["Covered Parking", "Parking Bays", "Parking Bay",
+                               "Parking", "Carports", "Carport", "Garages", "Garage"])
 
     return {
         "lease_months": lease_months,
@@ -300,6 +333,8 @@ def fetch_details(url: str):
         "property_type": property_type,
         "parking": parking,
         "bathrooms": bathrooms,
+        "bedrooms": bedrooms,
+        "commercial": commercial,
     }
 
 
@@ -358,9 +393,10 @@ def fetch_page(category: str, url: str):
         if price > MAX_PRICE:
             stats["too_pricey"] += 1
             continue
-        # число комнат ОБЯЗАТЕЛЬНО должно быть распознано и попадать в диапазон
-        # (bedrooms == 0 означает «не смогли определить» — такое больше не шлём)
-        if not (MIN_BEDROOMS <= bedrooms <= MAX_BEDROOMS):
+        # если число комнат В КАРТОЧКЕ известно и вне диапазона — сразу отсекаем;
+        # если не распознано (0, напр. «Apartment»/«Studio») — добираем на детальной
+        # странице в run_once, чтобы не терять валидные объявления без метки в карточке.
+        if bedrooms and not (MIN_BEDROOMS <= bedrooms <= MAX_BEDROOMS):
             stats["bedrooms"] += 1
             continue
         if bathrooms and not (MIN_BATHROOMS <= bathrooms <= MAX_BATHROOMS):
@@ -422,30 +458,46 @@ def run_once():
             candidates.append(listing)
         time.sleep(4)  # вежливая пауза между категориями, чтобы не ловить 503
 
+    print(f"Кандидатов на детальную проверку: {len(candidates)}")
     new_listings = []
     for listing in candidates:
         details = fetch_details(listing["url"])
         time.sleep(1)
 
-        if REQUIRED_LEASE_MONTHS and details["lease_months"] and details["lease_months"] != REQUIRED_LEASE_MONTHS:
+        def drop(reason):
             seen.add(listing["id"])  # запомнили, чтобы не проверять повторно
+            print(f"  ✗ {reason}: {listing['url']}")
+
+        # ЖЁСТКО: только жилое. Коммерцию (офис/ретейл/склад) не шлём.
+        if details["commercial"]:
+            drop("коммерция")
+            continue
+
+        # комнаты: из карточки, иначе со страницы объявления; обязателен диапазон
+        bedrooms = listing["bedrooms"] or details["bedrooms"] or 0
+        if not (MIN_BEDROOMS <= bedrooms <= MAX_BEDROOMS):
+            drop(f"комнаты={bedrooms or 'н/д'}")
+            continue
+        listing["bedrooms"] = bedrooms
+
+        if REQUIRED_LEASE_MONTHS and details["lease_months"] and details["lease_months"] != REQUIRED_LEASE_MONTHS:
+            drop(f"срок={details['lease_months']}мес")
             continue
         if FURNISHED_ONLY and details["furnished"] is False:
-            seen.add(listing["id"])
+            drop("без мебели")
             continue
 
         # парковка: из карточки, а если там не было — со страницы объявления
         parking = listing["parking"] or details["parking"] or 0
         if REQUIRE_PARKING and not (MIN_PARKING <= parking <= MAX_PARKING):
-            seen.add(listing["id"])
+            drop(f"парковка={parking or 'н/д'}")
             continue
         listing["parking"] = parking
 
         # санузлы: в карточке их обычно нет — берём со страницы объявления
         listing["bathrooms"] = listing["bathrooms"] or details["bathrooms"] or 0
-        # если кол-во санузлов известно и вне диапазона — отсекаем
         if listing["bathrooms"] and not (MIN_BATHROOMS <= listing["bathrooms"] <= MAX_BATHROOMS):
-            seen.add(listing["id"])
+            drop(f"санузлы={listing['bathrooms']}")
             continue
 
         listing["lease_months"] = details["lease_months"]
@@ -454,6 +506,9 @@ def run_once():
         listing["property_type"] = details["property_type"] or listing["category"]
         listing["priority"] = listing["property_type"] in PRIORITY_TYPES
 
+        print(f"  ✓ ОТПРАВ {listing['property_type']} {listing['suburb']} "
+              f"R{listing['price']} bed={bedrooms} bath={listing['bathrooms']} "
+              f"park={parking} furn={listing['furnished']}: {listing['url']}")
         new_listings.append(listing)
         seen.add(listing["id"])
 
