@@ -1,11 +1,11 @@
 {
   "max_price": 20000,
   "min_bedrooms": 1,
-  "max_bedrooms": 2,
+  "max_bedrooms": 1,
   "min_bathrooms": 1,
-  "max_bathrooms": 2,
+  "max_bathrooms": 1,
   "min_parking": 1,
-  "max_parking": 2,
+  "max_parking": 1,
   "require_parking": true,
   "furnished_only": true,
   "lease_months": 12
