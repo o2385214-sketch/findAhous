@@ -1,14 +1,17 @@
-name: Rental Bot
+name: Bot Control
 
 on:
   schedule:
-    # раз в 4 часа — чтобы уложиться в бесплатный лимит ScraperAPI (~1000 запросов/мес).
-    # Если перейдёшь на платный тариф/свой прокси — можно вернуть ежечасный "0 * * * *".
-    - cron: "0 */4 * * *"
+    - cron: "*/10 * * * *"   # раз в 10 минут читаем команды из Telegram
   workflow_dispatch: {}
 
+# не запускать два экземпляра одновременно (иначе оба заберут одни и те же сообщения)
+concurrency:
+  group: bot-control
+  cancel-in-progress: false
+
 jobs:
-  check-listings:
+  process-commands:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -22,23 +25,21 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install requests
 
-      - name: Run bot
+      - name: Process Telegram commands
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          SCRAPER_API_KEY: ${{ secrets.SCRAPER_API_KEY }}
-          SCRAPE_PROXY: ${{ secrets.SCRAPE_PROXY }}
-        run: python bot.py
+        run: python control.py
 
-      - name: Save seen listings
+      - name: Save config / state
         run: |
           git config user.name "rental-bot"
           git config user.email "rental-bot@users.noreply.github.com"
-          git add seen_listings.json
+          git add config.json tg_state.json
           if ! git diff --staged --quiet; then
-            git commit -m "Update seen listings"
+            git commit -m "Update settings from Telegram"
             for i in 1 2 3; do
               git pull --rebase origin main && git push && break
               sleep 5
