@@ -275,17 +275,30 @@ def fetch_page(category: str, url: str):
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
+    anchors = soup.select("a[href*='/to-rent/']")
+    stats = {"cards": 0, "blocked": 0, "no_price": 0, "too_pricey": 0,
+             "bedrooms": 0, "bathrooms": 0, "parking": 0, "passed": 0}
+    samples = []
+    seen_on_page = set()
+
     # Property24 listing cards — карточки со ссылкой на объявление вида /to-rent/.../NNNNNN
-    for link in soup.select("a[href*='/to-rent/']"):
+    for link in anchors:
         href = link.get("href", "")
         if not re.search(r"/\d{6,}$", href):
             continue  # это не карточка конкретного объявления, а ссылка на категорию
+
+        listing_id = re.search(r"(\d{6,})$", href).group(1)
+        if listing_id in seen_on_page:
+            continue  # у карточки бывает несколько ссылок (фото + заголовок) — считаем один раз
+        seen_on_page.add(listing_id)
+        stats["cards"] += 1
 
         full_url = href if href.startswith("http") else f"https://www.property24.com{href}"
 
         # Опасный район? — отсекаем сразу по slug из ссылки.
         suburb_slug = suburb_from_url(full_url)
         if suburb_slug in DANGEROUS_SUBURBS:
+            stats["blocked"] += 1
             continue
 
         card = link.find_parent(["div", "li", "article"]) or link
@@ -296,23 +309,30 @@ def fetch_page(category: str, url: str):
         bathrooms = parse_bathrooms(card)
         parking = parse_parking(card)
 
+        if len(samples) < 3:
+            samples.append(f"price={price} bed={bedrooms} bath={bathrooms} park={parking} | {card_text[:90]}")
+
         if price is None:
+            stats["no_price"] += 1
             continue
         if price > MAX_PRICE:
+            stats["too_pricey"] += 1
             continue
         # число комнат ОБЯЗАТЕЛЬНО должно быть распознано и попадать в диапазон
         # (bedrooms == 0 означает «не смогли определить» — такое больше не шлём)
         if not (MIN_BEDROOMS <= bedrooms <= MAX_BEDROOMS):
+            stats["bedrooms"] += 1
             continue
         if bathrooms and not (MIN_BATHROOMS <= bathrooms <= MAX_BATHROOMS):
+            stats["bathrooms"] += 1
             continue
         # парковку окончательно проверяем в run_once (там есть запасной источник — страница объявления)
         if parking and not (MIN_PARKING <= parking <= MAX_PARKING):
+            stats["parking"] += 1
             continue
 
-        listing_id = re.search(r"(\d{6,})$", href).group(1)
         title = link.get("title") or card_text[:80]
-
+        stats["passed"] += 1
         results.append(
             {
                 "id": f"p24_{listing_id}",
@@ -327,6 +347,13 @@ def fetch_page(category: str, url: str):
             }
         )
 
+    print(f"[{category}] ссылок={len(anchors)} карточек={stats['cards']} "
+          f"прошло={stats['passed']} | отсев: район={stats['blocked']} "
+          f"нет_цены={stats['no_price']} дорого={stats['too_pricey']} "
+          f"комнаты={stats['bedrooms']} санузлы={stats['bathrooms']} парковка={stats['parking']}")
+    if stats["cards"] and not stats["passed"]:
+        for s in samples:
+            print(f"    пример: {s}")
     return results
 
 
