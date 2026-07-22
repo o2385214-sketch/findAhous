@@ -82,7 +82,7 @@ CAPE_TOWN_SEARCHES = {
     "townhouse": "https://www.property24.com/townhouses-to-rent/cape-town/western-cape/432",
 }
 SORT_NEWEST = "?sp=so%3dNewest"
-PAGES_PER_SEARCH = 1   # 1 страницы «самых новых» хватает при ежечасном запуске; меньше запросов = меньше 503
+PAGES_PER_SEARCH = 3   # сканируем несколько страниц (не только новейшую) — глубже фонд, больше вариантов
 
 # Опасные районы Кейптауна (townships и высококриминальные зоны Cape Flats).
 # Совпадение по slug в URL объявления => объявление пропускается.
