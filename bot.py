@@ -42,7 +42,8 @@ MAX_PARKING = 2
 REQUIRED_LEASE_MONTHS = 12   # None = не проверять срок аренды
 FURNISHED_ONLY = True        # слать только меблированные (если статус не удалось определить — не отбрасываем)
 REQUIRE_PARKING = True       # слать только если парковка определена и в диапазоне MIN/MAX_PARKING
-PRIORITY_TYPES = ("house", "townhouse")  # такие объявления помечаются приоритетными и идут первыми
+MAX_PER_RUN = 10             # максимум объявлений за один прогон (остальные подходящие — в следующий)
+PRIORITY_TYPES = ("house", "townhouse")  # дом/таунхаус — вторичный приоритет (после меблировки)
 
 # --- Пользовательские фильтры из config.json (редактируются командами в Telegram) ---
 # Значения выше — дефолты; config.json их переопределяет, если файл существует.
@@ -51,7 +52,7 @@ CONFIG_FILE = Path(__file__).parent / "config.json"
 
 def _apply_config():
     global MAX_PRICE, MIN_PRICE, MIN_BEDROOMS, MAX_BEDROOMS, MIN_BATHROOMS, MAX_BATHROOMS
-    global MIN_PARKING, MAX_PARKING, REQUIRE_PARKING, FURNISHED_ONLY, REQUIRED_LEASE_MONTHS
+    global MIN_PARKING, MAX_PARKING, REQUIRE_PARKING, FURNISHED_ONLY, REQUIRED_LEASE_MONTHS, MAX_PER_RUN
     if not CONFIG_FILE.exists():
         return
     try:
@@ -69,6 +70,7 @@ def _apply_config():
     REQUIRE_PARKING = cfg.get("require_parking", REQUIRE_PARKING)
     FURNISHED_ONLY = cfg.get("furnished_only", FURNISHED_ONLY)
     REQUIRED_LEASE_MONTHS = cfg.get("lease_months", REQUIRED_LEASE_MONTHS)
+    MAX_PER_RUN = cfg.get("max_per_run", MAX_PER_RUN)
 
 
 _apply_config()
@@ -535,24 +537,30 @@ def run_once():
         listing["property_type"] = details["property_type"] or listing["category"]
         listing["priority"] = listing["property_type"] in PRIORITY_TYPES
 
-        print(f"  ✓ ОТПРАВ {listing['property_type']} {listing['suburb']} "
+        print(f"  ✓ ПОДХОДИТ {listing['property_type']} {listing['suburb']} "
               f"R{listing['price']} bed={bedrooms} bath={listing['bathrooms']} "
               f"park={parking} furn={listing['furnished']}: {listing['url']}")
-        new_listings.append(listing)
-        seen.add(listing["id"])
+        new_listings.append(listing)  # seen пометим только у РЕАЛЬНО отправленных (ниже)
 
-    # приоритетные (дом/таунхаус) — в начало списка
-    new_listings.sort(key=lambda x: not x["priority"])
+    # Приоритет: сначала МЕБЛИРОВАННЫЕ (furn=True), потом «мебель н/д», потом без мебели;
+    # внутри группы — дома/таунхаусы вперёд.
+    def _rank(x):
+        furn = 0 if x["furnished"] is True else (1 if x["furnished"] is None else 2)
+        return (furn, 0 if x["priority"] else 1)
+    new_listings.sort(key=_rank)
 
-    if new_listings:
-        for listing in new_listings:
+    # Лимит на прогон: лишние подходящие НЕ помечаем seen — придут в следующий прогон.
+    to_send = new_listings[:MAX_PER_RUN]
+
+    if to_send:
+        for listing in to_send:
             bedrooms_str = f"{listing['bedrooms']}-комн." if listing["bedrooms"] else "комнаты н/д"
             bathrooms_str = f"{listing['bathrooms']} с/у" if listing["bathrooms"] else "с/у н/д"
             parking_str = f"{listing['parking']} парк.места" if listing["parking"] else "парковка н/д"
             type_str = (listing["property_type"] or "тип н/д").capitalize()
             furnished_str = {True: "меблир.", False: "без мебели", None: "мебель н/д"}[listing["furnished"]]
             lease_str = f"{listing['lease_months']} мес." if listing["lease_months"] else "срок н/д"
-            star = "⭐ " if listing["priority"] else ""
+            star = "⭐ " if listing["furnished"] is True else ""
 
             text = (
                 f"{star}🏠 <b>{listing['suburb']}</b> · {type_str}\n"
@@ -562,9 +570,11 @@ def run_once():
                 f"{listing['url']}"
             ).replace(",", " ")
             send_telegram(text)
+            seen.add(listing["id"])
             time.sleep(1)
         save_seen(seen)
-        print(f"Отправлено новых объявлений: {len(new_listings)}")
+        extra = len(new_listings) - len(to_send)
+        print(f"Отправлено: {len(to_send)}" + (f" (ещё в очереди: {extra})" if extra else ""))
     else:
         save_seen(seen)
         print("Новых объявлений нет.")

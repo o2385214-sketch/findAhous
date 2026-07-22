@@ -8,6 +8,7 @@
   "min_parking": 1,
   "max_parking": 2,
   "require_parking": true,
-  "furnished_only": true,
-  "lease_months": 12
+  "furnished_only": false,
+  "lease_months": 12,
+  "max_per_run": 10
 }
