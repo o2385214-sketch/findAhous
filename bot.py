@@ -98,6 +98,12 @@ else:
     PAGES_PER_SEARCH = 2   # после триала: экономно, чтобы уложиться в ~1000/мес
     MAX_PER_RUN = 10
 
+# --- Второй источник: Private Property (privateproperty.co.za) ---
+# Открывается напрямую (без блокировки дата-центра) → ходим БЕЗ ScraperAPI (бесплатно).
+# Все данные (цена/комнаты/санузлы/парковка/тип) есть прямо в карточке-ссылке,
+# поэтому на страницу объявления заходить не нужно.
+PRIVATEPROPERTY_URL = "https://www.privateproperty.co.za/to-rent/western-cape/cape-town/55"
+
 # Опасные районы Кейптауна (townships и высококриминальные зоны Cape Flats).
 # Совпадение по slug в URL объявления => объявление пропускается.
 # Список легко расширять: добавь slug строчными буквами, слова через дефис.
@@ -142,20 +148,23 @@ SESSION.headers.update(HEADERS)
 RETRY_STATUS = {429, 503, 502, 504}
 
 
-def http_get(url: str, attempts: int = 4):
+def http_get(url: str, attempts: int = 4, via_scraper: bool = True):
     """GET с ретраями и нарастающей паузой на 503/429. Возвращает Response или None.
-    При заданном SCRAPER_API_KEY / SCRAPE_PROXY ходит через сервис ротации IP."""
+    По умолчанию (via_scraper=True) при заданном SCRAPER_API_KEY / SCRAPE_PROXY
+    ходит через сервис ротации IP (для сайтов, что блокируют дата-центр, напр.
+    Property24). via_scraper=False — прямой запрос без ScraperAPI (бесплатно;
+    для сайтов, что не блокируют, напр. Private Property)."""
     request_url = url
     proxies = None
     timeout = 25
-    if SCRAPER_API_KEY:
+    if via_scraper and SCRAPER_API_KEY:
         # ScraperAPI сам крутит IP; country_code=za — ЮАР-адреса; render=false (нам не нужен JS)
         request_url = (
             "https://api.scraperapi.com/?"
             f"api_key={SCRAPER_API_KEY}&country_code=za&url={quote(url, safe='')}"
         )
         timeout = 70  # прокси-сервису нужно больше времени
-    elif SCRAPE_PROXY:
+    elif via_scraper and SCRAPE_PROXY:
         proxies = {"http": SCRAPE_PROXY, "https": SCRAPE_PROXY}
 
     for i in range(attempts):
@@ -487,6 +496,78 @@ def fetch_listings(category: str, base_url: str):
     return results
 
 
+def _parse_pp_card(a):
+    """Из ссылки-карточки Private Property: цена, комнаты, санузлы, парковка, тип.
+    Все данные лежат в тексте самой ссылки, напр.:
+    «... R 15 495 per month 1 Bedroom Apartment in Richwood ... 1 1 2 65 m²»
+    где «1 1 2» = комнаты, санузлы, парковка (перед размером m²)."""
+    t = " ".join(a.get_text(" ", strip=True).split())
+    price = parse_price(t)
+    mb = re.search(r"(\d+)\s*Bedroom", t, re.IGNORECASE)
+    beds = int(mb.group(1)) if mb else 0
+    baths = parking = 0
+    mt = re.search(r"((?:\d+(?:\.\d+)?\s+){1,3})(\d+)\s*m", t)
+    if mt:
+        nums = mt.group(1).split()
+        if not beds and nums:
+            beds = int(float(nums[0]))
+        if len(nums) >= 2:
+            baths = int(float(nums[1]))
+        if len(nums) >= 3:
+            parking = int(float(nums[2]))
+    mtype = re.search(r"Bedroom\s+([A-Za-z]+)", t)
+    ptype = mtype.group(1).lower() if mtype else None
+    return price, beds, baths, parking, ptype
+
+
+def fetch_privateproperty():
+    """Второй источник — Private Property. Прямой запрос (via_scraper=False, без
+    ScraperAPI/кредитов). Все данные — из карточки; на объявление не заходим."""
+    results = []
+    seen_ids = set()
+    for page in range(1, PAGES_PER_SEARCH + 1):
+        url = PRIVATEPROPERTY_URL + (f"?page={page}" if page > 1 else "")
+        resp = http_get(url, via_scraper=False)
+        if resp is None:
+            print(f"[privateproperty] не получили страницу {url}")
+            continue
+        soup = BeautifulSoup(resp.text, "html.parser")
+        for a in soup.select("a[href*='/to-rent/']"):
+            href = a.get("href", "")
+            m = re.search(r"/(RR\d+)/?$", href)
+            if not m:
+                continue
+            rr = m.group(1)
+            if rr in seen_ids:
+                continue
+            seen_ids.add(rr)
+            parts = href.strip("/").split("/")
+            suburb_slug = parts[4] if len(parts) > 4 else ""
+            if suburb_slug in DANGEROUS_SUBURBS:
+                continue
+            price, beds, baths, parking, ptype = _parse_pp_card(a)
+            if price is None or price > MAX_PRICE or price < MIN_PRICE:
+                continue
+            if beds and not (MIN_BEDROOMS <= beds <= MAX_BEDROOMS):
+                continue
+            results.append({
+                "id": f"pp_{rr}",
+                "source": "privateproperty",
+                "category": ptype or "apartment",
+                "property_type": ptype,
+                "suburb": prettify_suburb(suburb_slug),
+                "price": price,
+                "bedrooms": beds,
+                "bathrooms": baths,
+                "parking": parking,
+                "title": f"{(ptype or 'жильё').capitalize()} в {prettify_suburb(suburb_slug)}",
+                "url": "https://www.privateproperty.co.za" + href,
+            })
+        time.sleep(2)
+    print(f"[privateproperty] найдено подходящих: {len(results)}")
+    return results
+
+
 def run_once():
     seen = load_seen()
     candidates = []
@@ -501,11 +582,30 @@ def run_once():
             candidates.append(listing)
         time.sleep(4)  # вежливая пауза между категориями, чтобы не ловить 503
 
+    # Второй источник — Private Property (прямой запрос, без ScraperAPI/кредитов)
+    for listing in fetch_privateproperty():
+        if listing["id"] in seen or listing["id"] in seen_ids_this_run:
+            continue
+        seen_ids_this_run.add(listing["id"])
+        candidates.append(listing)
+
     print(f"Кандидатов на детальную проверку: {len(candidates)}")
     new_listings = []
     for listing in candidates:
-        details = fetch_details(listing["url"])
-        time.sleep(1)
+        if listing.get("source") == "privateproperty":
+            # У Private Property все данные уже в карточке — детальную страницу не грузим.
+            details = {
+                "lease_months": None,
+                "furnished": None,
+                "property_type": listing.get("property_type"),
+                "parking": listing.get("parking"),
+                "bathrooms": listing.get("bathrooms"),
+                "bedrooms": listing.get("bedrooms"),
+                "commercial": False,
+            }
+        else:
+            details = fetch_details(listing["url"])
+            time.sleep(1)
 
         def drop(reason):
             seen.add(listing["id"])  # запомнили, чтобы не проверять повторно
@@ -573,11 +673,12 @@ def run_once():
             furnished_str = {True: "меблир.", False: "без мебели", None: "мебель н/д"}[listing["furnished"]]
             lease_str = f"{listing['lease_months']} мес." if listing["lease_months"] else "срок н/д"
             star = "⭐ " if listing["furnished"] is True else ""
+            src = "Private Property" if listing.get("source") == "privateproperty" else "Property24"
 
             text = (
                 f"{star}🏠 <b>{listing['suburb']}</b> · {type_str}\n"
                 f"💰 R{listing['price']:,}/мес · {bedrooms_str} · {bathrooms_str} · {parking_str}\n"
-                f"{furnished_str} · аренда {lease_str}\n"
+                f"{furnished_str} · аренда {lease_str} · 🌐 {src}\n"
                 f"{listing['title']}\n"
                 f"{listing['url']}"
             ).replace(",", " ")
