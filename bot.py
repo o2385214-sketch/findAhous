@@ -21,7 +21,13 @@ from bs4 import BeautifulSoup
 # ============== CONFIG ==============
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+# Получателей может быть НЕСКОЛЬКО (например, сотрудник Батлер Деливери).
+# В TELEGRAM_CHAT_ID можно перечислить их через запятую: "123456,789012".
+# Первый в списке — владелец: только он вправе менять фильтры (см. control.py).
+# Сами id в публичный репозиторий не попадают: локально они в secrets_local.py,
+# на GitHub — в секрете TELEGRAM_CHAT_ID.
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+CHAT_IDS = [c for c in re.split(r"[,;\s]+", TELEGRAM_CHAT_ID) if c]
 
 # Property24 блокирует IP дата-центров (GitHub Actions) — 503 после первого запроса.
 # Чтобы обойти, ходим через сервис с ротацией жилых IP. Задай ОДИН из секретов:
@@ -222,23 +228,30 @@ def save_seen(seen: set) -> None:
 
 
 def send_telegram(text: str) -> None:
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+    """Шлёт объявление ВСЕМ получателям из CHAT_IDS. Сбой у одного получателя
+    (например, сотрудник заблокировал бота) не мешает остальным получить
+    сообщение — поэтому у каждого свой try."""
+    if not TELEGRAM_TOKEN or not CHAT_IDS:
         print("WARNING: TELEGRAM_TOKEN / TELEGRAM_CHAT_ID не заданы — сообщение не отправлено.")
         print(text)
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    resp = requests.post(
-        url,
-        data={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": text,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": False,
-        },
-        timeout=15,
-    )
-    if not resp.ok:
-        print("Telegram error:", resp.status_code, resp.text)
+    for chat_id in CHAT_IDS:
+        try:
+            resp = requests.post(
+                url,
+                data={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": False,
+                },
+                timeout=15,
+            )
+            if not resp.ok:
+                print(f"Telegram error для {chat_id}:", resp.status_code, resp.text)
+        except requests.RequestException as e:
+            print(f"Telegram не отправлено для {chat_id}: {e}")
 
 
 def parse_price(text: str):

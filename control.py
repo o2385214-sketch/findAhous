@@ -16,7 +16,17 @@ from pathlib import Path
 import requests
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "")
+# В TELEGRAM_CHAT_ID может быть несколько получателей через запятую.
+# ПЕРВЫЙ — владелец (админ): только он может менять фильтры.
+# Остальные (например, сотрудник) получают объявления и могут смотреть
+# настройки через /статус, но изменить их не могут — иначе любой из них
+# незаметно перенастроил бы поиск владельцу.
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+CHAT_IDS = [c for c in re.split(r"[,;\s]+", TELEGRAM_CHAT_ID) if c]
+ADMIN_CHAT_ID = CHAT_IDS[0] if CHAT_IDS else ""
+
+# Команды, доступные всем получателям, а не только владельцу.
+READONLY_COMMANDS = {"статус", "status", "помощь", "help", "start"}
 
 HERE = Path(__file__).parent
 CONFIG_FILE = HERE / "config.json"
@@ -73,14 +83,17 @@ def get_config():
     return cfg
 
 
-def send(text):
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+def send(text, chat_id=None):
+    """Отвечаем ТОМУ, кто написал (chat_id), а не всегда владельцу — иначе
+    сотрудник шлёт /статус, а ответ уходит владельцу, и оба в недоумении."""
+    to = chat_id or ADMIN_CHAT_ID
+    if not TELEGRAM_TOKEN or not to:
         print("нет TELEGRAM_TOKEN / TELEGRAM_CHAT_ID — не отвечаю")
         return
     try:
         requests.post(
             f"{API}/sendMessage",
-            data={"chat_id": TELEGRAM_CHAT_ID, "text": text, "parse_mode": "HTML"},
+            data={"chat_id": to, "text": text, "parse_mode": "HTML"},
             timeout=15,
         )
     except requests.RequestException as e:
@@ -176,6 +189,26 @@ def apply_command(text, cfg):
     return True, None
 
 
+def note_unknown(chat_id, msg, state):
+    """Боту написал кто-то, кого нет в списке. Один раз сообщаем владельцу его
+    имя и chat_id — так подключить сотрудника можно, не выковыривая id вручную
+    из getUpdates. Повторно про того же человека не пишем."""
+    seen = state.setdefault("unknown_chats", [])
+    if chat_id in seen:
+        return
+    seen.append(chat_id)
+    who = msg.get("from") or {}
+    name = " ".join(x for x in (who.get("first_name"), who.get("last_name")) if x) or "без имени"
+    uname = "@" + who["username"] if who.get("username") else "username не указан"
+    send(
+        "👤 <b>Боту написал новый человек</b>\n"
+        f"{name} ({uname})\n"
+        f"chat_id: <code>{chat_id}</code>\n\n"
+        "Если это твой сотрудник — скажи, и я подключу его к рассылке объявлений.",
+        ADMIN_CHAT_ID,
+    )
+
+
 def main():
     if not TELEGRAM_TOKEN:
         print("нет TELEGRAM_TOKEN — выход")
@@ -206,30 +239,42 @@ def main():
         if "/" not in text:
             continue
         chat_id = str(msg.get("chat", {}).get("id", ""))
-        if TELEGRAM_CHAT_ID and chat_id != str(TELEGRAM_CHAT_ID):
+        if CHAT_IDS and chat_id not in CHAT_IDS:
             print(f"игнор команды из чужого чата {chat_id}")
+            note_unknown(chat_id, msg, state)
             continue
+        is_admin = chat_id == ADMIN_CHAT_ID
 
         # одно сообщение может содержать несколько команд (по строкам или подряд):
         # "/цена 25000 /комнаты 1 3" -> ["/цена 25000 ", "/комнаты 1 3"]
         commands = re.findall(r"/[^/]+", text)
         replies = []
         msg_changed = False
+        denied = False
         for c in commands:
+            head = c.strip().split()
+            name = head[0].lower().lstrip("/").split("@")[0] if head else ""
+            if not is_admin and name not in READONLY_COMMANDS:
+                denied = True
+                continue
             ch, rep = apply_command(c, cfg)
             if ch:
                 msg_changed = True
             if rep:
                 replies.append(rep)
+        if denied:
+            replies.append("🔒 Менять настройки поиска может только владелец.\n"
+                           "Вам доступны /статус и /помощь.")
         if msg_changed:
             changed = True
             replies.append("✅ Готово, применю при следующем поиске.\n\n" + status_text(cfg))
         if replies:
-            send("\n\n".join(replies))
+            send("\n\n".join(replies), chat_id)
 
     if changed:
         save_json(CONFIG_FILE, cfg)
-    save_json(STATE_FILE, {"offset": offset})
+    state["offset"] = offset          # сохраняем и offset, и список unknown_chats
+    save_json(STATE_FILE, state)
     print(f"Обновлений: {len(updates)}, config изменён: {changed}")
 
 
