@@ -30,6 +30,9 @@ sys.path.insert(0, str(HERE))
 SECRETS = HERE / "secrets_local.py"
 HEARTBEAT = HERE / "rental_heartbeat.txt"
 LOG = HERE / "rental_daemon.log"
+# Выключатель: появился файл STOP рядом со скриптом — демон аккуратно выходит.
+# Убить процесс со стороны (из другой сессии Windows) нельзя, а файл создать можно.
+STOP_FLAG = HERE / "STOP"
 TRACKED = ["seen_listings.json"]
 
 RUN_EVERY_HOURS = 4     # как часто искать объявления
@@ -163,6 +166,14 @@ def main():
     last_beat = 0.0
     p24_down_streak = 0     # сколько прогонов подряд Property24 молчит
     while True:
+        if STOP_FLAG.exists():
+            try:
+                STOP_FLAG.unlink()
+            except OSError:
+                pass
+            log("получен сигнал остановки (файл STOP) — выхожу")
+            return
+
         now = time.time()
         if now >= next_run:
             stats = None

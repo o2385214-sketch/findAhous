@@ -25,6 +25,9 @@ sys.path.insert(0, str(HERE))
 SECRETS = HERE / "secrets_local.py"
 HEARTBEAT = HERE / "control_heartbeat.txt"
 LOG = HERE / "control_daemon.log"
+# Выключатель: появился файл STOP рядом со скриптом — демон аккуратно выходит.
+# Убить процесс со стороны (из другой сессии Windows) нельзя, а файл создать можно.
+STOP_FLAG = HERE / "STOP"
 TRACKED = ["config.json", "tg_state.json"]
 
 POLL_PAUSE = 2      # пауза между опросами (сам getUpdates висит до 10 сек)
@@ -158,6 +161,14 @@ def main():
 
     last_beat = time.time()
     while True:
+        if STOP_FLAG.exists():
+            try:
+                STOP_FLAG.unlink()
+            except OSError:
+                pass
+            log("получен сигнал остановки (файл STOP) — выхожу")
+            return
+
         try:
             if not os.environ.get("TELEGRAM_CHAT_ID"):
                 found = detect_chat_id()
