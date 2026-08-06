@@ -31,6 +31,22 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 SCRAPER_API_KEY = os.environ.get("SCRAPER_API_KEY", "")
 SCRAPE_PROXY = os.environ.get("SCRAPE_PROXY", "")
 
+# ПРЯМОЙ РЕЖИМ — когда ни ключа, ни прокси нет (так бот работает на ДОМАШНЕМ ПК:
+# домашний IP Property24 не блокирует, кредиты ScraperAPI не тратятся вовсе).
+# Но при частых запросах подряд Property24 отдаёт 503, поэтому в прямом режиме
+# держим заметно большую паузу между детальными страницами.
+DIRECT_MODE = not (SCRAPER_API_KEY or SCRAPE_PROXY)
+# Property24 ограничивает частоту по IP: несколько десятков запросов подряд — и
+# он отдаёт 503 всему адресу примерно на полчаса (проверено 2026-08-06 на
+# домашнем IP). Поэтому в прямом режиме ходим редко и с большими паузами, а
+# число детальных страниц за прогон жёстко ограничиваем.
+DETAIL_PAUSE = 15 if DIRECT_MODE else 1
+MAX_DETAIL_FETCHES = 12 if DIRECT_MODE else 999
+# Предупреждать в Telegram, если источник Property24 не отдал НИ ОДНОЙ карточки
+# (типичная причина — кончились кредиты ScraperAPI). Включает локальный демон,
+# чтобы прогоны на GitHub Actions не слали это по 6 раз в сутки.
+ALERT_ON_SOURCE_DOWN = os.environ.get("ALERT_ON_SOURCE_DOWN", "") == "1"
+
 MAX_PRICE = 20000          # максимум ZAR / месяц
 MIN_PRICE = 0              # минимум ZAR / месяц (0 = без нижней границы)
 MIN_BEDROOMS = 1
@@ -96,6 +112,11 @@ if datetime.date.today() < SCRAPERAPI_TRIAL_END:
     MAX_PER_RUN = 12
 else:
     PAGES_PER_SEARCH = 2   # после триала: экономно, чтобы уложиться в ~1000/мес
+
+# В прямом режиме ограничитель — не деньги, а лимит запросов Property24 на один
+# IP. Берём по одной (самой свежей) странице на категорию: 3 запроса на прогон.
+if DIRECT_MODE:
+    PAGES_PER_SEARCH = 1
     MAX_PER_RUN = 10
 
 # --- Второй источник: Private Property (privateproperty.co.za) ---
@@ -289,6 +310,10 @@ COMMERCIAL_HINTS = ("commercial", "office", "retail", "industrial", "warehouse",
 _EMPTY_DETAILS = {
     "lease_months": None, "furnished": None, "property_type": None,
     "parking": None, "bathrooms": None, "bedrooms": None, "commercial": False,
+    # ok=False означает «страницу объявления скачать НЕ удалось» (503/таймаут).
+    # Это надо отличать от «страницу прочли, но поля пустые»: в первом случае
+    # объявление нельзя ни отправить, ни похоронить в seen — только отложить.
+    "ok": True,
 }
 
 
@@ -336,7 +361,9 @@ def fetch_details(url: str):
     resp = http_get(url)
     if resp is None:
         print(f"Не получили детали {url}")
-        return dict(_EMPTY_DETAILS)
+        d = dict(_EMPTY_DETAILS)
+        d["ok"] = False
+        return d
 
     text = BeautifulSoup(resp.text, "html.parser").get_text(" ", strip=True)
 
@@ -573,24 +600,46 @@ def run_once():
     candidates = []
     seen_ids_this_run = set()  # объявление может встретиться в нескольких категориях — не дублируем
 
+    p24_cards = 0   # сколько карточек вообще отдал Property24 (0 = источник недоступен)
+    pp_cards = 0    # то же по Private Property
+
     for category, base_url in CAPE_TOWN_SEARCHES.items():
         listings = fetch_listings(category, base_url)
+        p24_cards += len(listings)
         for listing in listings:
             if listing["id"] in seen or listing["id"] in seen_ids_this_run:
                 continue
             seen_ids_this_run.add(listing["id"])
             candidates.append(listing)
-        time.sleep(4)  # вежливая пауза между категориями, чтобы не ловить 503
+        time.sleep(10 if DIRECT_MODE else 4)  # вежливая пауза между категориями, чтобы не ловить 503
 
     # Второй источник — Private Property (прямой запрос, без ScraperAPI/кредитов)
-    for listing in fetch_privateproperty():
+    pp_listings = fetch_privateproperty()
+    pp_cards = len(pp_listings)
+    for listing in pp_listings:
         if listing["id"] in seen or listing["id"] in seen_ids_this_run:
             continue
         seen_ids_this_run.add(listing["id"])
         candidates.append(listing)
 
+    # Диагностика тишины: если Property24 не дал НИ ОДНОЙ карточки, а Private
+    # Property дал — значит проблема именно в доступе к Property24 (кончились
+    # кредиты ScraperAPI / блокировка), а не в фильтрах и не в сети.
+    if p24_cards == 0:
+        reason = ("кончились кредиты ScraperAPI либо неверный ключ"
+                  if not DIRECT_MODE else "Property24 не отвечает с этого IP")
+        print(f"⚠️ Property24 не отдал ни одной карточки — {reason}")
+        if ALERT_ON_SOURCE_DOWN and pp_cards:
+            send_telegram(
+                "⚠️ <b>Источник Property24 недоступен</b>\n"
+                f"Причина скорее всего: {reason}.\n"
+                "Private Property работает, объявления оттуда идут как обычно."
+            )
+
     print(f"Кандидатов на детальную проверку: {len(candidates)}")
     new_listings = []
+    postponed = 0        # объявления, отложенные до следующего прогона
+    detail_fetches = 0   # сколько детальных страниц Property24 уже скачали
     for listing in candidates:
         if listing.get("source") == "privateproperty":
             # У Private Property все данные уже в карточке — детальную страницу не грузим.
@@ -602,14 +651,31 @@ def run_once():
                 "bathrooms": listing.get("bathrooms"),
                 "bedrooms": listing.get("bedrooms"),
                 "commercial": False,
+                "ok": True,
             }
         else:
+            # Лимит детальных страниц за прогон: не злим Property24 и не рискуем
+            # получить 503 на весь IP. Остальные не теряются — придут в следующий раз.
+            if detail_fetches >= MAX_DETAIL_FETCHES:
+                print(f"  ⏳ отложено (лимит {MAX_DETAIL_FETCHES} страниц за прогон): {listing['url']}")
+                postponed += 1
+                continue
+            detail_fetches += 1
             details = fetch_details(listing["url"])
-            time.sleep(1)
+            time.sleep(DETAIL_PAUSE)
 
         def drop(reason):
             seen.add(listing["id"])  # запомнили, чтобы не проверять повторно
             print(f"  ✗ {reason}: {listing['url']}")
+
+        # Страница объявления не открылась (503/таймаут) — это НЕ повод считать
+        # объявление неподходящим. Раньше такое падало в «парковка=н/д» и
+        # навсегда уходило в seen: годные варианты сгорали из-за сбоя сети.
+        # Теперь просто откладываем — проверим на следующем прогоне.
+        if not details.get("ok", True):
+            print(f"  ⏳ отложено (страница не открылась): {listing['url']}")
+            postponed += 1
+            continue
 
         # ЖЁСТКО: только жилое. Коммерцию (офис/ретейл/склад) не шлём.
         if details["commercial"]:
@@ -691,6 +757,18 @@ def run_once():
     else:
         save_seen(seen)
         print("Новых объявлений нет.")
+
+    if postponed:
+        print(f"Отложено до следующего прогона (не открылась страница): {postponed}")
+
+    return {
+        "p24_cards": p24_cards,
+        "pp_cards": pp_cards,
+        "candidates": len(candidates),
+        "passed": len(new_listings),
+        "sent": len(to_send),
+        "postponed": postponed,
+    }
 
 
 if __name__ == "__main__":

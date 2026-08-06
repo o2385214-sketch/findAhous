@@ -1,0 +1,11 @@
+# ЛОКАЛЬНЫЕ СЕКРЕТЫ — НИКОГДА не попадают в репозиторий (он публичный!)
+secrets_local.py
+
+# служебное
+__pycache__/
+*.pyc
+control_heartbeat.txt
+control_daemon.log
+rental_heartbeat.txt
+rental_daemon.log
+*.lock
