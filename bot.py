@@ -303,18 +303,37 @@ def send_telegram(text: str) -> None:
             print(f"Telegram не отправлено для {chat_id}: {e}")
 
 
+# Картинки, которые НЕ являются фотографией жилья. Private Property кладёт
+# в карточку сначала логотип агентства (/offices/) и портрет агента
+# (/accountholders/), и наивный «первый img» давал именно их.
+NOT_A_PHOTO = ("/offices/", "/accountholders/", "logo", "avatar",
+               "placeholder", "sprite", "icon")
+# Признаки настоящего фото объекта: так выглядят адреса фотохранилищ обоих сайтов.
+PHOTO_HINTS = ("images.pp.co.za/listing/", "images.prop24.com")
+
+
 def card_image(card) -> str:
     """Ссылка на фото из карточки объявления. Сайты грузят картинки лениво,
     поэтому настоящий адрес часто лежит не в src, а в data-src/data-lazy —
-    в src при этом стоит заглушка-пиксель. Берём первый годный вариант."""
+    в src при этом стоит заглушка-пиксель.
+
+    Сначала ищем снимок из фотохранилища, и только если такого нет — берём
+    первую попавшуюся картинку: логотип агентства в витрине хуже, чем ничего."""
+    found = []
     for img in card.find_all("img"):
         for attr in ("data-src", "data-lazy", "data-original", "src"):
             u = (img.get(attr) or "").strip()
             if u.startswith("//"):
                 u = "https:" + u
-            if u.startswith("http") and not u.endswith(".svg") and "placeholder" not in u.lower():
+            if not u.startswith("http") or u.endswith(".svg"):
+                continue
+            low = u.lower()
+            if any(bad in low for bad in NOT_A_PHOTO):
+                continue
+            if any(good in low for good in PHOTO_HINTS):
                 return u
-    return ""
+            found.append(u)
+    return found[0] if found else ""
 
 
 def parse_price(text: str):
