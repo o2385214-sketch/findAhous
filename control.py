@@ -343,9 +343,11 @@ def main():
             if not is_admin and name not in READONLY_COMMANDS:
                 denied = True
                 continue
+            # /start новичку тоже показываем кнопкой, а не только текстом
+            if name in ("приложение", "app", "start"):
+                want_app = True
             if name in ("приложение", "app"):
-                want_app = True   # ответим клавиатурой, а не текстом
-                continue
+                continue   # своего текста у команды нет — только клавиатура
             ch, rep = apply_command(c, cfg)
             if ch:
                 msg_changed = True
