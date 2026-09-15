@@ -4,206 +4,375 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Поиск жилья · Кейптаун</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏠</text></svg>">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
-  /* Цвета берём у Telegram: тогда мини-апп выглядит как часть мессенджера
+  /* Цвета берём у Telegram: тогда мини-апп выглядит частью мессенджера
      и сам подстраивается под светлую/тёмную тему. Значения после запятой —
      запасные, они работают, когда страницу открыли в обычном браузере. */
   :root{
-    --bg:        var(--tg-theme-bg-color, #ffffff);
-    --bg2:       var(--tg-theme-secondary-bg-color, #f1f3f5);
-    --text:      var(--tg-theme-text-color, #16191d);
-    --hint:      var(--tg-theme-hint-color, #78848f);
-    --btn:       var(--tg-theme-button-color, #2a7fd4);
-    --btn-text:  var(--tg-theme-button-text-color, #ffffff);
-    --line:      color-mix(in srgb, var(--hint) 28%, transparent);
-    --radius: 14px;
+    --bg:       var(--tg-theme-bg-color, #ffffff);
+    --bg2:      var(--tg-theme-secondary-bg-color, #f2f4f7);
+    --text:     var(--tg-theme-text-color, #14171a);
+    --hint:     var(--tg-theme-hint-color, #7d8a96);
+    --btn:      var(--tg-theme-button-color, #2f83d8);
+    --btn-text: var(--tg-theme-button-text-color, #ffffff);
+
+    /* Производные. color-mix избавляет от отдельной палитры под тёмную тему:
+       оттенки считаются от цветов, которые прислал мессенджер. Строка над
+       каждым правилом — запасная: на старом WebView без color-mix берётся
+       она, и оформление не разваливается. */
+    --card:     var(--tg-theme-secondary-bg-color, #f2f4f7);
+    --card:     color-mix(in srgb, var(--bg) 92%, var(--text) 8%);
+    --line:     rgba(128,128,128,.26);
+    --line:     color-mix(in srgb, var(--hint) 22%, transparent);
+    --line-soft:rgba(128,128,128,.14);
+    --line-soft:color-mix(in srgb, var(--hint) 12%, transparent);
+    --accent-soft: rgba(128,128,128,.15);
+    --accent-soft: color-mix(in srgb, var(--btn) 12%, transparent);
+
+    --r-lg: 18px;
+    --r-md: 12px;
+    --r-sm: 9px;
+    --shadow: 0 1px 2px rgba(0,0,0,.05), 0 10px 26px -14px rgba(0,0,0,.28);
   }
   *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
   body{
     margin:0; background:var(--bg); color:var(--text);
     font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    padding-bottom:90px;  /* место под нативную кнопку Telegram */
+    padding-bottom:96px;            /* место под нативную кнопку Telegram */
+    overflow-x:hidden;
   }
   .wrap{padding:0 14px}
+  svg{flex:none}
 
-  /* ---------- вкладки ---------- */
-  .tabs{
-    display:flex; gap:6px; padding:10px 14px;
-    position:sticky; top:0; z-index:9; background:var(--bg);
-    border-bottom:1px solid var(--line);
+  /* ======================= ШАПКА ======================= */
+  header{
+    position:sticky; top:0; z-index:20; background:var(--bg);
+    padding:12px 14px 10px;
+    border-bottom:1px solid var(--line-soft);
   }
-  .tab{
-    flex:1; padding:9px 8px; border:0; border-radius:10px; cursor:pointer;
-    background:var(--bg2); color:var(--text); font-size:14px; font-weight:600;
-    font-family:inherit;
-  }
-  .tab[aria-selected="true"]{background:var(--btn); color:var(--btn-text)}
+  .title-row{display:flex; align-items:baseline; gap:8px; margin-bottom:11px}
+  .title-row h1{margin:0; font-size:17px; font-weight:700; letter-spacing:-.3px}
+  .title-row .count{font-size:13px; color:var(--hint); margin-left:auto; white-space:nowrap}
 
-  /* ---------- панель сортировки ---------- */
-  .bar{
-    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
-    padding:12px 0 4px; font-size:13px; color:var(--hint);
+  /* Вкладки — сегментированный переключатель: одна подвижная «таблетка»
+     скользит под активным пунктом, это спокойнее, чем две ярких кнопки. */
+  .seg{
+    position:relative; display:flex; background:var(--bg2);
+    border-radius:var(--r-md); padding:3px;
   }
-  select, input[type="number"]{
-    font:inherit; font-size:14px; color:var(--text); background:var(--bg2);
-    border:1px solid var(--line); border-radius:9px; padding:7px 9px;
-    max-width:100%;
+  .seg .pill{
+    position:absolute; top:3px; left:3px; bottom:3px; width:calc(50% - 3px);
+    background:var(--bg); border-radius:10px; box-shadow:var(--shadow);
+    transition:transform .22s cubic-bezier(.4,0,.2,1);
+  }
+  .seg[data-tab="filters"] .pill{transform:translateX(100%)}
+  .seg button{
+    position:relative; z-index:1; flex:1; padding:8px 4px; border:0; background:none;
+    font:inherit; font-size:13.5px; font-weight:600; color:var(--hint);
+    cursor:pointer; border-radius:10px; transition:color .2s;
+  }
+  .seg button[aria-selected="true"]{color:var(--text)}
+
+  /* ======================= ПАНЕЛЬ СОРТИРОВКИ ======================= */
+  .bar{display:flex; gap:7px; padding:12px 0 2px; overflow-x:auto; scrollbar-width:none}
+  .bar::-webkit-scrollbar{display:none}
+  .pillbtn{
+    flex:none; display:inline-flex; align-items:center; gap:5px;
+    padding:7px 12px; border:1px solid var(--line); border-radius:99px;
+    background:transparent; color:var(--hint); font:inherit; font-size:13px;
+    font-weight:500; cursor:pointer; white-space:nowrap; transition:.18s;
+  }
+  .pillbtn[aria-pressed="true"]{
+    background:var(--accent-soft); border-color:transparent; color:var(--btn); font-weight:600;
   }
 
-  /* ---------- карточка квартиры ---------- */
+  /* ======================= КАРТОЧКА ======================= */
   .card{
-    background:var(--bg2); border-radius:var(--radius); overflow:hidden;
-    margin:12px 0; border:1px solid var(--line);
+    background:var(--card); border-radius:var(--r-lg); overflow:hidden;
+    margin:12px 0; border:1px solid var(--line-soft); box-shadow:var(--shadow);
+    cursor:pointer; -webkit-tap-highlight-color:transparent;
+    transition:transform .15s ease;
   }
-  .card .photo{
-    width:100%; max-width:100%; aspect-ratio:16/10; object-fit:cover;
-    display:block; background:var(--line);
-  }
-  .card .body{padding:11px 13px 13px}
-  .card .price{font-size:19px; font-weight:700; letter-spacing:-.2px}
-  .card .per{font-size:13px; font-weight:400; color:var(--hint)}
-  .card .where{font-size:14px; color:var(--hint); margin:1px 0 8px}
-  .card h3{margin:0 0 8px; font-size:14px; font-weight:500; line-height:1.35}
+  .card:active{transform:scale(.985)}
 
-  /* Характеристики — значками: так они влезают в строку на узком экране. */
-  .specs{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px}
-  .chip{
-    background:var(--bg); border:1px solid var(--line); border-radius:7px;
-    padding:3px 8px; font-size:12.5px; white-space:nowrap;
+  /* Обложка: фото, поверх него затемнение снизу и на нём — цена.
+     Так цена читается на любом снимке, а карточка перестаёт быть таблицей. */
+  .cover{
+    position:relative; aspect-ratio:16/10; width:100%; max-width:100%;
+    background:linear-gradient(135deg,
+      color-mix(in srgb, var(--btn) 55%, #000 10%),
+      color-mix(in srgb, var(--btn) 22%, #000 35%));
   }
-  .chip.on{border-color:var(--btn); color:var(--btn)}
-  .open{
-    display:block; text-align:center; text-decoration:none;
-    background:var(--btn); color:var(--btn-text);
-    padding:10px; border-radius:10px; font-weight:600; font-size:14px;
+  .cover img{
+    position:absolute; inset:0; width:100%; height:100%;
+    object-fit:cover; display:block;
   }
-  .star{color:#f0a020}
-  .meta{font-size:11.5px; color:var(--hint); margin-top:8px; text-align:center}
+  .shade{
+    position:absolute; inset:0;
+    background:linear-gradient(to top, rgba(0,0,0,.86) 4%, rgba(0,0,0,.34) 38%, rgba(0,0,0,0) 68%);
+  }
+  .badges{position:absolute; top:10px; left:10px; display:flex; gap:6px; flex-wrap:wrap}
+  .badge{
+    display:inline-flex; align-items:center; gap:4px;
+    background:rgba(20,20,22,.62); backdrop-filter:blur(8px);
+    -webkit-backdrop-filter:blur(8px);
+    color:#fff; font-size:11.5px; font-weight:600; padding:4px 9px; border-radius:99px;
+    letter-spacing:.1px;
+  }
+  .badge.gold{background:rgba(190,132,20,.82)}
+  .headline{position:absolute; left:13px; right:13px; bottom:11px; color:#fff}
+  .headline .price{
+    font-size:23px; font-weight:750; letter-spacing:-.6px; line-height:1.1;
+    font-variant-numeric:tabular-nums; text-shadow:0 1px 12px rgba(0,0,0,.4);
+  }
+  .headline .price span{font-size:13px; font-weight:500; opacity:.85; letter-spacing:0}
+  .headline .where{
+    font-size:13.5px; opacity:.93; margin-top:3px; font-weight:500;
+    display:flex; align-items:center; gap:5px;
+  }
 
-  /* ---------- форма фильтров ---------- */
-  .field{padding:13px 0; border-bottom:1px solid var(--line)}
-  .field:last-of-type{border-bottom:0}
-  .field label{display:block; font-weight:600; font-size:14px; margin-bottom:7px}
-  .range{display:flex; align-items:center; gap:8px}
-  .range input{width:100%; min-width:0}
-  .range span{color:var(--hint); font-size:13px; flex:none}
-  .hint{font-size:12.5px; color:var(--hint); margin-top:6px; line-height:1.4}
+  .card .body{padding:11px 13px 12px}
+  .card h3{
+    margin:0 0 10px; font-size:13.5px; font-weight:450; line-height:1.4;
+    color:var(--hint);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  }
 
-  /* Переключатель «да/нет» — две кнопки вместо галочки: пальцем попасть проще. */
-  .toggle{display:flex; gap:6px}
+  /* Характеристики — значок плюс число. Иконки рисованные, а не эмодзи:
+     эмодзи в каждой системе свои и рядом смотрятся пёстро. */
+  .specs{display:flex; gap:14px; flex-wrap:wrap; align-items:center}
+  .spec{display:inline-flex; align-items:center; gap:5px; font-size:13px; color:var(--text)}
+  .spec svg{opacity:.55}
+  .spec.na{color:var(--hint); opacity:.65}
+
+  .cardfoot{
+    display:flex; align-items:center; gap:6px; margin-top:11px;
+    padding-top:10px; border-top:1px solid var(--line-soft);
+    font-size:12px; color:var(--hint);
+  }
+  .cardfoot .go{margin-left:auto; color:var(--btn); font-weight:600; display:inline-flex; align-items:center; gap:3px}
+
+  /* ======================= ФИЛЬТРЫ ======================= */
+  .group{
+    background:var(--card); border:1px solid var(--line-soft); border-radius:var(--r-lg);
+    padding:4px 14px; margin:12px 0; box-shadow:var(--shadow);
+  }
+  .field{padding:13px 0; border-bottom:1px solid var(--line-soft)}
+  .field:last-child{border-bottom:0}
+  .field .lbl{
+    display:flex; align-items:center; gap:7px;
+    font-weight:600; font-size:14px; margin-bottom:10px;
+  }
+  .field .lbl svg{opacity:.5}
+  .hint{font-size:12px; color:var(--hint); margin-top:8px; line-height:1.4}
+
+  /* Ввод цены: символ валюты внутри поля, чтобы не занимать отдельную колонку. */
+  .money{display:flex; align-items:center; gap:9px}
+  .money .box{
+    flex:1; min-width:0; display:flex; align-items:center; gap:2px;
+    background:var(--bg2); border:1.5px solid transparent; border-radius:var(--r-md);
+    padding:9px 11px; transition:border-color .18s;
+  }
+  .money .box:focus-within{border-color:var(--btn)}
+  .money .cur{color:var(--hint); font-size:15px; flex:none}
+  .money input{
+    width:100%; min-width:0; border:0; background:none; color:var(--text);
+    font:inherit; font-size:15.5px; font-weight:600; padding:0;
+    font-variant-numeric:tabular-nums; outline:none;
+  }
+  .money .dash{color:var(--hint); flex:none}
+
+  /* Степпер: на телефоне попасть по «плюсу» быстрее, чем открывать клавиатуру. */
+  .stepper{display:flex; align-items:center; justify-content:space-between; gap:10px}
+  .stepper .cap{font-size:13.5px; color:var(--hint)}
+  .stepper .ctrl{display:flex; align-items:center; gap:2px; background:var(--bg2); border-radius:99px; padding:3px}
+  .stepper button{
+    width:30px; height:30px; border:0; border-radius:50%; background:transparent;
+    color:var(--text); font-size:18px; line-height:1; cursor:pointer; font-family:inherit;
+    display:flex; align-items:center; justify-content:center; transition:background .15s;
+  }
+  .stepper button:active{background:var(--line)}
+  .stepper button:disabled{opacity:.28; cursor:default}
+  .stepper .val{
+    min-width:30px; text-align:center; font-size:15px; font-weight:700;
+    font-variant-numeric:tabular-nums;
+  }
+
+  .toggle{display:flex; gap:5px; background:var(--bg2); border-radius:var(--r-md); padding:3px}
   .toggle button{
-    flex:1; padding:9px; border:1px solid var(--line); border-radius:9px;
-    background:var(--bg2); color:var(--text); font:inherit; font-size:14px;
-    cursor:pointer;
+    flex:1; padding:8px 6px; border:0; border-radius:9px; background:transparent;
+    color:var(--hint); font:inherit; font-size:13.5px; font-weight:600; cursor:pointer;
+    transition:.18s;
   }
-  .toggle button[aria-pressed="true"]{
-    background:var(--btn); color:var(--btn-text); border-color:var(--btn);
+  .toggle button[aria-pressed="true"]{background:var(--bg); color:var(--text); box-shadow:var(--shadow)}
+
+  /* Сводка: одной фразой показывает, что именно получится искать. */
+  .summary{
+    display:flex; gap:10px; align-items:flex-start;
+    background:var(--accent-soft); border-radius:var(--r-lg);
+    padding:13px 15px; margin:12px 0; font-size:13.5px; line-height:1.5;
   }
+  .summary svg{margin-top:1px; color:var(--btn)}
+  .summary b{font-weight:650}
 
   .note{
-    background:var(--bg2); border:1px solid var(--line); border-radius:var(--radius);
-    padding:13px; font-size:13.5px; color:var(--hint); line-height:1.5; margin:14px 0;
+    font-size:12.5px; color:var(--hint); line-height:1.5;
+    padding:2px 4px 10px; text-align:center;
   }
-  .empty{text-align:center; padding:48px 20px; color:var(--hint)}
-  .empty b{display:block; color:var(--text); font-size:16px; margin-bottom:6px}
-  [hidden]{display:none !important}
-  /* Запасная кнопка: вне Telegram нативной MainButton не существует. */
   #save-fallback{
-    width:100%; padding:13px; margin:16px 0; border:0; border-radius:11px;
-    background:var(--btn); color:var(--btn-text); font:inherit; font-weight:600;
+    width:100%; padding:14px; margin:6px 0 10px; border:0; border-radius:var(--r-md);
+    background:var(--btn); color:var(--btn-text); font:inherit; font-weight:650;
     font-size:15px; cursor:pointer;
   }
+
+  /* ======================= СОСТОЯНИЯ ======================= */
+  .empty{text-align:center; padding:56px 24px; color:var(--hint)}
+  .empty svg{opacity:.3; margin-bottom:14px}
+  .empty b{display:block; color:var(--text); font-size:16.5px; font-weight:650; margin-bottom:7px}
+  .empty p{margin:0; font-size:13.5px; line-height:1.55; max-width:290px; margin-inline:auto}
+
+  /* Заглушка на время загрузки: место под карточку занято сразу,
+     поэтому список не «прыгает», когда данные приходят. */
+  .skel{
+    background:var(--card); border:1px solid var(--line-soft);
+    border-radius:var(--r-lg); overflow:hidden; margin:12px 0;
+  }
+  .skel .ph{aspect-ratio:16/10; background:var(--bg2)}
+  .skel .ln{height:11px; border-radius:6px; background:var(--bg2); margin:11px 13px}
+  .skel .ln.s{width:45%}
+  .pulse{animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+
+  .card, .group{animation:rise .34s cubic-bezier(.2,.7,.3,1) both}
+  @keyframes rise{from{opacity:0; transform:translateY(10px)}to{opacity:1; transform:none}}
+
+  @media (prefers-reduced-motion:reduce){
+    *,*::before,*::after{animation-duration:.01ms !important; transition-duration:.01ms !important}
+  }
+  [hidden]{display:none !important}
 </style>
 </head>
 <body>
 
-<div class="tabs" role="tablist">
-  <button class="tab" id="tab-list"    role="tab" aria-selected="true"  aria-controls="view-list">🏠 Квартиры</button>
-  <button class="tab" id="tab-filters" role="tab" aria-selected="false" aria-controls="view-filters">⚙️ Фильтры</button>
-</div>
+<header>
+  <div class="title-row">
+    <h1>Аренда в Кейптауне</h1>
+    <span class="count" id="count"></span>
+  </div>
+  <div class="seg" id="seg" data-tab="list" role="tablist">
+    <span class="pill"></span>
+    <button id="tab-list"    role="tab" aria-selected="true">Квартиры</button>
+    <button id="tab-filters" role="tab" aria-selected="false">Фильтры</button>
+  </div>
+</header>
 
-<!-- ================= ВИТРИНА ================= -->
+<!-- ======================= ВИТРИНА ======================= -->
 <section class="wrap" id="view-list" role="tabpanel">
   <div class="bar">
-    <span>Сортировка</span>
-    <select id="sort">
-      <option value="new">сначала новые</option>
-      <option value="cheap">сначала дешёвые</option>
-      <option value="rich">сначала дорогие</option>
-    </select>
-    <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
-      <input type="checkbox" id="only-furn"> только меблированные
-    </label>
+    <button class="pillbtn" data-sort="new"   aria-pressed="true">Сначала новые</button>
+    <button class="pillbtn" data-sort="cheap" aria-pressed="false">Дешевле</button>
+    <button class="pillbtn" data-sort="rich"  aria-pressed="false">Дороже</button>
+    <button class="pillbtn" id="only-furn"    aria-pressed="false">С мебелью</button>
   </div>
   <div id="cards"></div>
 </section>
 
-<!-- ================= ФИЛЬТРЫ ================= -->
+<!-- ======================= ФИЛЬТРЫ ======================= -->
 <section class="wrap" id="view-filters" role="tabpanel" hidden>
-  <div class="field">
-    <label>💰 Цена, ZAR в месяц</label>
-    <div class="range">
-      <input type="number" id="min_price" min="0" step="500" inputmode="numeric">
-      <span>—</span>
-      <input type="number" id="max_price" min="0" step="500" inputmode="numeric">
-    </div>
-    <div class="hint">0 слева — без нижней границы.</div>
+
+  <div class="summary">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+      <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>
+    </svg>
+    <div id="summary-text"></div>
   </div>
 
-  <div class="field">
-    <label>🛏 Спальни</label>
-    <div class="range">
-      <input type="number" id="min_bedrooms" min="0" max="9" inputmode="numeric">
-      <span>—</span>
-      <input type="number" id="max_bedrooms" min="0" max="9" inputmode="numeric">
-    </div>
-  </div>
-
-  <div class="field">
-    <label>🚿 Санузлы</label>
-    <div class="range">
-      <input type="number" id="min_bathrooms" min="0" max="9" inputmode="numeric">
-      <span>—</span>
-      <input type="number" id="max_bathrooms" min="0" max="9" inputmode="numeric">
+  <div class="group">
+    <div class="field">
+      <div class="lbl">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/>
+        </svg>
+        Цена за месяц
+      </div>
+      <div class="money">
+        <div class="box"><span class="cur">R</span><input type="number" id="min_price" min="0" step="500" inputmode="numeric" placeholder="от"></div>
+        <span class="dash">—</span>
+        <div class="box"><span class="cur">R</span><input type="number" id="max_price" min="0" step="500" inputmode="numeric" placeholder="до"></div>
+      </div>
+      <div class="hint">Оставьте «от» пустым или нулём, если нижняя граница не нужна.</div>
     </div>
   </div>
 
-  <div class="field">
-    <label>🅿 Парковка обязательна?</label>
-    <div class="toggle" id="require_parking">
-      <button type="button" data-v="1">Да</button>
-      <button type="button" data-v="0">Не важно</button>
+  <div class="group">
+    <div class="field">
+      <div class="lbl">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 18v-3a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3M3 18v2M21 18v2M3 13V7M7 10h5a2 2 0 0 1 2 2v1H5v-1a2 2 0 0 1 2-2Z"/>
+        </svg>
+        Спальни
+      </div>
+      <div class="stepper" data-pair="bedrooms"></div>
     </div>
-    <div class="range" id="parking-range" style="margin-top:9px">
-      <input type="number" id="min_parking" min="0" max="9" inputmode="numeric">
-      <span>—</span>
-      <input type="number" id="max_parking" min="0" max="9" inputmode="numeric">
+
+    <div class="field">
+      <div class="lbl">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 12h16v3a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4v-3ZM6 12V6a2 2 0 0 1 2-2h1M7 19l-1 2M17 19l1 2"/>
+        </svg>
+        Санузлы
+      </div>
+      <div class="stepper" data-pair="bathrooms"></div>
     </div>
-    <div class="hint">При «Да» объявления без указанной парковки отсеиваются.</div>
+
+    <div class="field">
+      <div class="lbl">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="18" height="18" rx="4"/><path d="M9 17V8h3.2a2.9 2.9 0 0 1 0 5.8H9"/>
+        </svg>
+        Парковка
+      </div>
+      <div class="toggle" id="require_parking">
+        <button type="button" data-v="1">Обязательна</button>
+        <button type="button" data-v="0">Не важно</button>
+      </div>
+      <div class="stepper" data-pair="parking" style="margin-top:12px"></div>
+      <div class="hint">Объявления, где парковка не указана, при «обязательна» отсеиваются.</div>
+    </div>
   </div>
 
-  <div class="field">
-    <label>🛋 Только меблированные?</label>
-    <div class="toggle" id="furnished_only">
-      <button type="button" data-v="1">Да</button>
-      <button type="button" data-v="0">Любые</button>
+  <div class="group">
+    <div class="field">
+      <div class="lbl">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4 18v-5a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v5M4 18h16M5 18v2M19 18v2M7 10V7a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v3"/>
+        </svg>
+        Мебель
+      </div>
+      <div class="toggle" id="furnished_only">
+        <button type="button" data-v="1">Только с мебелью</button>
+        <button type="button" data-v="0">Любые</button>
+      </div>
+      <div class="hint">Объявления без пометки о мебели приходят в обоих режимах.</div>
     </div>
-    <div class="hint">Если статус мебели в объявлении не указан — оно всё равно придёт.</div>
-  </div>
 
-  <div class="field">
-    <label>📅 Срок аренды, месяцев</label>
-    <input type="number" id="lease_months" min="0" max="60" inputmode="numeric" style="width:100%">
-    <div class="hint">0 — срок не проверять.</div>
+    <div class="field">
+      <div class="lbl">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>
+        </svg>
+        Срок аренды
+      </div>
+      <div class="stepper" data-single="lease_months"></div>
+      <div class="hint">0 — срок не проверять.</div>
+    </div>
   </div>
 
   <button id="save-fallback" hidden>Сохранить фильтры</button>
-
-  <div class="note">
-    Настройки применятся при следующем прогоне поиска. То же самое можно сделать
-    командами в чате — <b>/статус</b> покажет, что стоит сейчас.
-  </div>
+  <div class="note">Настройки применятся при следующем прогоне поиска.</div>
 </section>
 
 <script>
@@ -215,6 +384,7 @@ var tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : 
 if (tg) { tg.ready(); tg.expand(); }
 
 function $(id) { return document.getElementById(id); }
+function tap(style) { if (tg && tg.HapticFeedback) tg.HapticFeedback.impactOccurred(style || "light"); }
 
 // Данные лежат на уровень выше самой страницы (webapp/ внутри репозитория).
 // Метка времени в адресе обязательна: GitHub Pages кеширует ответы надолго,
@@ -232,12 +402,31 @@ var DEFAULTS = {
 
 var listings = [];
 var config = Object.assign({}, DEFAULTS);
+var sortMode = "new";
+var onlyFurnished = false;
+
+/* ---------------- значки ---------------- */
+// Рисуем сами: эмодзи выглядят по-разному в каждой системе, а эти
+// наследуют цвет текста и одинаково смотрятся в светлой и тёмной теме.
+var ICON = {
+  bed:  '<path d="M3 18v-3a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3M3 18v2M21 18v2M3 13V7M7 10h5a2 2 0 0 1 2 2v1H5v-1a2 2 0 0 1 2-2Z"/>',
+  bath: '<path d="M4 12h16v3a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4v-3ZM6 12V6a2 2 0 0 1 2-2h1M7 19l-1 2M17 19l1 2"/>',
+  park: '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M9 17V8h3.2a2.9 2.9 0 0 1 0 5.8H9"/>',
+  cal:  '<rect x="3" y="5" width="18" height="16" rx="3"/><path d="M3 10h18M8 3v4M16 3v4"/>'
+};
+function svg(name, size) {
+  var s = size || 15;
+  return '<svg width="' + s + '" height="' + s + '" viewBox="0 0 24 24" fill="none" '
+       + 'stroke="currentColor" stroke-width="2" stroke-linecap="round" '
+       + 'stroke-linejoin="round">' + ICON[name] + "</svg>";
+}
 
 /* ---------------- вкладки ---------------- */
 function showTab(which) {
   var isList = which === "list";
-  $("tab-list").setAttribute("aria-selected", isList);
-  $("tab-filters").setAttribute("aria-selected", !isList);
+  $("seg").dataset.tab = which;
+  $("tab-list").setAttribute("aria-selected", String(isList));
+  $("tab-filters").setAttribute("aria-selected", String(!isList));
   $("view-list").hidden = !isList;
   $("view-filters").hidden = isList;
   // Нативная кнопка Telegram нужна только на вкладке фильтров: на витрине
@@ -247,18 +436,20 @@ function showTab(which) {
   }
   window.scrollTo(0, 0);
 }
-$("tab-list").onclick = function () { showTab("list"); };
-$("tab-filters").onclick = function () { showTab("filters"); };
+$("tab-list").onclick = function () { tap(); showTab("list"); };
+$("tab-filters").onclick = function () { tap(); showTab("filters"); };
 
 /* ---------------- витрина ---------------- */
 function money(n) {
-  // Пробел вместо запятой: «R15 495» читается привычнее, чем «R15,495».
-  return "R" + String(n || 0).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  // Узкий пробел вместо запятой: «R15 495» читается привычнее, чем «R15,495».
+  return String(n || 0).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
 function when(iso) {
   if (!iso) return "";
-  var days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  var t = new Date(iso).getTime();
+  if (isNaN(t)) return "";        // непонятная дата лучше, чем надпись «NaN»
+  var days = Math.floor((Date.now() - t) / 86400000);
   if (days <= 0) return "сегодня";
   if (days === 1) return "вчера";
   if (days < 7) return days + " дн. назад";
@@ -273,52 +464,105 @@ function esc(s) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+// Тип жилья приходит с сайта по-английски. Показываем по-русски, а незнакомое
+// оставляем как есть — лучше английское слово, чем пустой бейдж.
+var TYPES = {
+  apartment: "Квартира", flat: "Квартира", studio: "Студия",
+  house: "Дом", townhouse: "Таунхаус", cluster: "Таунхаус",
+  duplex: "Дуплекс", simplex: "Симплекс", cottage: "Коттедж",
+  penthouse: "Пентхаус", loft: "Лофт", villa: "Вилла",
+  maisonette: "Мезонет", garden: "С садом"
+};
+function typeName(t) {
+  return TYPES[String(t || "").toLowerCase()] || String(t || "");
+}
+
+var MONTHS = { JAN: "янв", FEB: "фев", MAR: "мар", APR: "апр", MAY: "мая", JUN: "июн",
+               JUL: "июл", AUG: "авг", SEP: "сен", OCT: "окт", NOV: "ноя", DEC: "дек" };
+
+// Property24 сваливает в заголовок всё подряд: «AVAILABLE: 01 OCT R 19 950
+// 1 Bedroom Apartment Sea Point A fully renovated...». Цена, комнаты, тип и
+// район уже показаны карточкой, поэтому вытаскиваем из этой каши только два
+// полезных куска — дату освобождения и собственно описание.
+function unpackTitle(raw, suburb) {
+  var title = String(raw || "");
+  var free = "";
+
+  var m = title.match(/AVAILABLE:?\s*(\d{1,2})\s*([A-Za-z]{3})/i);
+  if (m) free = "с " + parseInt(m[1], 10) + " " + (MONTHS[m[2].toUpperCase()] || m[2]);
+  else if (/AVAILABLE\s+NOW/i.test(title)) free = "свободна";
+
+  // Всё до «N Bedroom Тип» — служебная шапка объявления.
+  title = title.replace(/^.*?\d+\s*Bedrooms?\s+[A-Za-z]+\s+/i, "");
+  // Следом обычно идёт название района — оно уже стоит под ценой.
+  if (suburb && title.toLowerCase().indexOf(suburb.toLowerCase()) === 0) {
+    title = title.slice(suburb.length).replace(/^[\s,.-]+/, "");
+  }
+  return { text: title.trim(), free: free };
+}
+
+// «1 вариант», «2 варианта», «7 вариантов» — без этого счётчик режет глаз.
+function plural(n, one, few, many) {
+  var d10 = n % 10, d100 = n % 100;
+  if (d10 === 1 && d100 !== 11) return one;
+  if (d10 >= 2 && d10 <= 4 && (d100 < 12 || d100 > 14)) return few;
+  return many;
+}
+
+function spec(icon, value, unit) {
+  var known = !!value;
+  return '<span class="spec' + (known ? "" : " na") + '">' + svg(icon)
+       + (known ? value + (unit ? " " + unit : "") : "н/д") + "</span>";
+}
+
 function cardHTML(x) {
-  var furn = x.furnished === true ? "меблир."
-           : x.furnished === false ? "без мебели" : "мебель н/д";
-  var parts = [
-    x.bedrooms ? x.bedrooms + " спал." : "спальни н/д",
-    x.bathrooms ? x.bathrooms + " с/у" : "с/у н/д",
-    x.parking ? x.parking + " парк." : "парковка н/д"
-  ];
-  if (x.lease_months) parts.push(x.lease_months + " мес.");
+  var badges = "";
+  if (x.furnished === true) badges += '<span class="badge gold">С мебелью</span>';
+  else if (x.furnished === false) badges += '<span class="badge">Без мебели</span>';
+  if (x.property_type) badges += '<span class="badge">' + esc(typeName(x.property_type)) + "</span>";
 
-  var chips = parts.map(function (t) {
-    return '<span class="chip">' + esc(t) + "</span>";
-  }).join("");
-  var furnChip = '<span class="chip' + (x.furnished === true ? " on" : "") + '">'
-               + furn + "</span>";
-
-  // Битую ссылку на фото просто убираем — пустая рамка выглядит хуже,
-  // чем карточка вовсе без картинки.
+  // Битую ссылку на фото убираем — под ней остаётся цветная подложка,
+  // и карточка выглядит задуманно, а не сломанно.
   var photo = x.image
-    ? '<img class="photo" src="' + esc(x.image) + '" alt="" loading="lazy" onerror="this.remove()">'
+    ? '<img src="' + esc(x.image) + '" alt="" loading="lazy" onerror="this.remove()">'
     : "";
   var src = x.source === "privateproperty" ? "Private Property" : "Property24";
-  var star = x.furnished === true ? '<span class="star">⭐</span> ' : "";
 
-  return '<article class="card">' + photo
-    + '<div class="body">'
-    + '<div class="price">' + star + money(x.price) + '<span class="per">/мес</span></div>'
-    + '<div class="where">' + esc(x.suburb || "район н/д")
-    + (x.property_type ? " · " + esc(x.property_type) : "") + "</div>"
-    + "<h3>" + esc(String(x.title || "").slice(0, 110)) + "</h3>"
-    + '<div class="specs">' + furnChip + chips + "</div>"
-    + '<a class="open" href="' + esc(x.url) + '" data-url="' + esc(x.url) + '">Открыть объявление</a>'
-    + '<div class="meta">' + src + " · найдено " + when(x.found_at) + "</div>"
+  var t = unpackTitle(x.title, x.suburb);
+  if (t.free) badges += '<span class="badge">' + esc(t.free) + "</span>";
+
+  // Private Property называет объявления «Apartment в Foreshore» — тип и район
+  // уже стоят в бейдже и под ценой, второй раз их печатать незачем.
+  var sub = String(x.suburb || "").toLowerCase();
+  var dup = sub && t.text.length < 45 && t.text.toLowerCase().indexOf(sub) !== -1;
+  var head = (!t.text || dup) ? "" : "<h3>" + esc(t.text.slice(0, 140)) + "</h3>";
+
+  return '<article class="card" data-url="' + esc(x.url) + '">'
+    + '<div class="cover">' + photo + '<div class="shade"></div>'
+    +   '<div class="badges">' + badges + "</div>"
+    +   '<div class="headline">'
+    +     '<div class="price">R' + money(x.price) + "<span>/мес</span></div>"
+    +     '<div class="where">' + esc(x.suburb || "район не указан") + "</div>"
+    +   "</div>"
+    + "</div>"
+    + '<div class="body">' + head
+    +   '<div class="specs">'
+    +     spec("bed", x.bedrooms, "") + spec("bath", x.bathrooms, "")
+    +     spec("park", x.parking, "") + (x.lease_months ? spec("cal", x.lease_months, "мес") : "")
+    +   "</div>"
+    +   '<div class="cardfoot">' + src + " · " + when(x.found_at)
+    +     '<span class="go">Открыть &rsaquo;</span>'
+    +   "</div>"
     + "</div></article>";
 }
 
 function renderList() {
   var rows = listings.slice();
-  if ($("only-furn").checked) {
-    rows = rows.filter(function (x) { return x.furnished === true; });
-  }
+  if (onlyFurnished) rows = rows.filter(function (x) { return x.furnished === true; });
 
-  var mode = $("sort").value;
-  if (mode === "cheap") {
+  if (sortMode === "cheap") {
     rows.sort(function (a, b) { return (a.price || 0) - (b.price || 0); });
-  } else if (mode === "rich") {
+  } else if (sortMode === "rich") {
     rows.sort(function (a, b) { return (b.price || 0) - (a.price || 0); });
   } else {
     rows.sort(function (a, b) {
@@ -326,11 +570,25 @@ function renderList() {
     });
   }
 
+  var prices = listings.map(function (x) { return x.price || 0; })
+                       .filter(function (p) { return p > 0; });
+  $("count").textContent = listings.length
+    ? listings.length + " " + plural(listings.length, "вариант", "варианта", "вариантов")
+      + (prices.length ? " · от R" + money(Math.min.apply(null, prices)) : "")
+    : "";
+
   var box = $("cards");
   if (!rows.length) {
-    box.innerHTML = '<div class="empty"><b>Пока пусто</b>'
-      + "Квартиры появятся здесь после ближайшего прогона поиска. "
-      + "Проверьте фильтры на соседней вкладке — возможно, они слишком узкие.</div>";
+    box.innerHTML = '<div class="empty">'
+      + '<svg width="56" height="56" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+      + 'stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+      + '<path d="M3 10.5 12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1v-9.5Z"/></svg>'
+      + "<b>" + (listings.length ? "Ничего не подошло" : "Пока пусто") + "</b>"
+      + "<p>" + (listings.length
+          ? "Снимите отбор «С мебелью» — в Кейптауне большинство квартир сдаются пустыми."
+          : "Квартиры появятся здесь после ближайшего прогона поиска. "
+            + "Если ждёте давно — проверьте фильтры на соседней вкладке.")
+      + "</p></div>";
     return;
   }
   box.innerHTML = rows.map(cardHTML).join("");
@@ -339,58 +597,143 @@ function renderList() {
 // Ссылку наружу открываем через Telegram: иначе сайт откроется внутри
 // мини-аппа, в тесном окне без адресной строки и кнопки «назад».
 $("cards").addEventListener("click", function (e) {
-  var a = e.target.closest("a[data-url]");
-  if (!a) return;
-  if (tg && tg.openLink) { e.preventDefault(); tg.openLink(a.getAttribute("data-url")); }
+  var card = e.target.closest(".card");
+  if (!card) return;
+  var url = card.getAttribute("data-url");
+  tap("medium");
+  if (tg && tg.openLink) { tg.openLink(url); } else { window.open(url, "_blank"); }
 });
-$("sort").onchange = renderList;
-$("only-furn").onchange = renderList;
+
+document.querySelectorAll(".bar .pillbtn[data-sort]").forEach(function (b) {
+  b.addEventListener("click", function () {
+    sortMode = b.dataset.sort;
+    document.querySelectorAll(".bar .pillbtn[data-sort]").forEach(function (o) {
+      o.setAttribute("aria-pressed", String(o === b));
+    });
+    tap(); renderList();
+  });
+});
+$("only-furn").addEventListener("click", function () {
+  onlyFurnished = !onlyFurnished;
+  $("only-furn").setAttribute("aria-pressed", String(onlyFurnished));
+  tap(); renderList();
+});
 
 /* ---------------- фильтры ---------------- */
 var NUMS = ["min_price", "max_price", "min_bedrooms", "max_bedrooms",
             "min_bathrooms", "max_bathrooms", "min_parking", "max_parking",
             "lease_months"];
+var LIMITS = { bedrooms: 9, bathrooms: 9, parking: 9, lease_months: 60 };
+
+// Степперы собираются кодом: три пары «от…до» устроены одинаково,
+// и повторять для каждой один и тот же кусок разметки незачем.
+function buildSteppers() {
+  document.querySelectorAll(".stepper[data-pair]").forEach(function (el) {
+    var p = el.dataset.pair;
+    el.innerHTML = stepUnit("min_" + p, "от") + stepUnit("max_" + p, "до");
+    el.style.gap = "18px";
+  });
+  document.querySelectorAll(".stepper[data-single]").forEach(function (el) {
+    el.innerHTML = stepUnit(el.dataset.single, "месяцев");
+  });
+  document.querySelectorAll(".stepper .ctrl button").forEach(function (b) {
+    b.addEventListener("click", function () {
+      bump(b.dataset.key, parseInt(b.dataset.step, 10));
+    });
+  });
+}
+function stepUnit(key, caption) {
+  return '<div style="display:flex;align-items:center;gap:9px">'
+       + '<span class="cap">' + caption + "</span>"
+       + '<span class="ctrl">'
+       +   '<button type="button" data-key="' + key + '" data-step="-1" aria-label="меньше">&minus;</button>'
+       +   '<span class="val" id="v_' + key + '">0</span>'
+       +   '<button type="button" data-key="' + key + '" data-step="1" aria-label="больше">+</button>'
+       + "</span></div>";
+}
+function bump(key, delta) {
+  var cap = LIMITS[key.replace(/^(min|max)_/, "")] || 9;
+  config[key] = Math.max(0, Math.min(cap, (config[key] || 0) + delta));
+  // Границы диапазона не должны перехлёстываться: подталкиваем соседнюю.
+  var base = key.replace(/^(min|max)_/, "");
+  if (key.indexOf("min_") === 0 && config[key] > config["max_" + base]) {
+    config["max_" + base] = config[key];
+  }
+  if (key.indexOf("max_") === 0 && config[key] < config["min_" + base]) {
+    config["min_" + base] = config[key];
+  }
+  tap(); paintSteppers(); updateSummary();
+}
+function paintSteppers() {
+  document.querySelectorAll(".stepper .val").forEach(function (el) {
+    var key = el.id.slice(2);
+    el.textContent = config[key] != null ? config[key] : 0;
+  });
+  document.querySelectorAll(".stepper .ctrl button").forEach(function (b) {
+    var key = b.dataset.key, step = parseInt(b.dataset.step, 10);
+    var cap = LIMITS[key.replace(/^(min|max)_/, "")] || 9;
+    b.disabled = step < 0 ? (config[key] || 0) <= 0 : (config[key] || 0) >= cap;
+  });
+}
 
 function setToggle(id, value) {
-  var btns = $(id).querySelectorAll("button");
-  for (var i = 0; i < btns.length; i++) {
-    btns[i].setAttribute("aria-pressed", String((btns[i].dataset.v === "1") === !!value));
-  }
+  $(id).querySelectorAll("button").forEach(function (b) {
+    b.setAttribute("aria-pressed", String((b.dataset.v === "1") === !!value));
+  });
 }
 function getToggle(id) {
   var on = $(id).querySelector('button[aria-pressed="true"]');
   return !!on && on.dataset.v === "1";
 }
-
 ["require_parking", "furnished_only"].forEach(function (id) {
   $(id).addEventListener("click", function (e) {
     var b = e.target.closest("button");
     if (!b) return;
-    setToggle(id, b.dataset.v === "1");
-    if (id === "require_parking") syncParkingRange();
-    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+    config[id] = b.dataset.v === "1";
+    setToggle(id, config[id]);
+    if (id === "require_parking") syncParking();
+    tap(); updateSummary();
+  });
+});
+function syncParking() {
+  // Диапазон мест не нужен, когда парковка не обязательна — прячем,
+  // чтобы не спрашивать про то, что ни на что не повлияет.
+  document.querySelector('.stepper[data-pair="parking"]').hidden = !config.require_parking;
+}
+
+["min_price", "max_price"].forEach(function (k) {
+  $(k).addEventListener("input", function () {
+    var n = parseInt($(k).value, 10);
+    config[k] = (isFinite(n) && n >= 0) ? n : 0;
+    updateSummary();
   });
 });
 
-function syncParkingRange() {
-  // Диапазон мест не нужен, когда парковка не обязательна — прячем,
-  // чтобы не спрашивать про то, что ни на что не повлияет.
-  $("parking-range").hidden = !getToggle("require_parking");
+function updateSummary() {
+  var beds = config.min_bedrooms === config.max_bedrooms
+    ? config.min_bedrooms : config.min_bedrooms + "–" + config.max_bedrooms;
+  var price = config.min_price
+    ? "R" + money(config.min_price) + "–" + money(config.max_price)
+    : "до R" + money(config.max_price);
+  var bits = [beds + " спал.", price];
+  bits.push(config.require_parking ? "с парковкой" : "парковка не важна");
+  if (config.furnished_only) bits.push("с мебелью");
+  if (config.lease_months) bits.push(config.lease_months + " мес.");
+  $("summary-text").innerHTML = "Ищем: <b>" + bits.join("</b>, <b>") + "</b>";
 }
 
 function fillForm() {
-  NUMS.forEach(function (k) {
-    $(k).value = (config[k] != null) ? config[k] : DEFAULTS[k];
-  });
+  $("min_price").value = config.min_price || "";
+  $("max_price").value = config.max_price || "";
   setToggle("require_parking", config.require_parking);
   setToggle("furnished_only", config.furnished_only);
-  syncParkingRange();
+  syncParking(); paintSteppers(); updateSummary();
 }
 
 function readForm() {
   var out = {};
   NUMS.forEach(function (k) {
-    var n = parseInt($(k).value, 10);
+    var n = parseInt(config[k], 10);
     out[k] = (isFinite(n) && n >= 0) ? n : DEFAULTS[k];
   });
   // Перепутанные местами границы — обычная опечатка, а не повод ругаться:
@@ -402,6 +745,9 @@ function readForm() {
       var t = out[pair[0]]; out[pair[0]] = out[pair[1]]; out[pair[1]] = t;
     }
   });
+  // Пустое поле «до» дало бы потолок R0 — бот не нашёл бы вообще ничего.
+  // Считаем это опечаткой и возвращаем значение по умолчанию.
+  if (!out.max_price) out.max_price = DEFAULTS.max_price;
   out.require_parking = getToggle("require_parking");
   out.furnished_only = getToggle("furnished_only");
   return out;
@@ -414,7 +760,7 @@ function save() {
     alert("Сохранение работает только внутри Telegram.\n\n" + JSON.stringify(data, null, 1));
     return;
   }
-  if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
+  tap("medium");
   // sendData отправляет строку боту и сразу закрывает мини-апп —
   // подтверждение пользователь увидит уже сообщением в чате.
   tg.sendData(JSON.stringify(data));
@@ -441,6 +787,11 @@ function grab(url, fallback) {
     });
 }
 
+$("cards").innerHTML = new Array(3).join().split(",").map(function () {
+  return '<div class="skel pulse"><div class="ph"></div><div class="ln"></div><div class="ln s"></div></div>';
+}).join("");
+
+buildSteppers();
 Promise.all([grab(DATA, []), grab(CONF, {})]).then(function (res) {
   listings = Array.isArray(res[0]) ? res[0] : [];
   config = Object.assign({}, DEFAULTS, res[1]);
