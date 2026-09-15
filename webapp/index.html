@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Поиск жилья · Кейптаун</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  /* Цвета берём у Telegram: тогда мини-апп выглядит как часть мессенджера
+     и сам подстраивается под светлую/тёмную тему. Значения после запятой —
+     запасные, они работают, когда страницу открыли в обычном браузере. */
+  :root{
+    --bg:        var(--tg-theme-bg-color, #ffffff);
+    --bg2:       var(--tg-theme-secondary-bg-color, #f1f3f5);
+    --text:      var(--tg-theme-text-color, #16191d);
+    --hint:      var(--tg-theme-hint-color, #78848f);
+    --btn:       var(--tg-theme-button-color, #2a7fd4);
+    --btn-text:  var(--tg-theme-button-text-color, #ffffff);
+    --line:      color-mix(in srgb, var(--hint) 28%, transparent);
+    --radius: 14px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--text);
+    font:15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding-bottom:90px;  /* место под нативную кнопку Telegram */
+  }
+  .wrap{padding:0 14px}
+
+  /* ---------- вкладки ---------- */
+  .tabs{
+    display:flex; gap:6px; padding:10px 14px;
+    position:sticky; top:0; z-index:9; background:var(--bg);
+    border-bottom:1px solid var(--line);
+  }
+  .tab{
+    flex:1; padding:9px 8px; border:0; border-radius:10px; cursor:pointer;
+    background:var(--bg2); color:var(--text); font-size:14px; font-weight:600;
+    font-family:inherit;
+  }
+  .tab[aria-selected="true"]{background:var(--btn); color:var(--btn-text)}
+
+  /* ---------- панель сортировки ---------- */
+  .bar{
+    display:flex; gap:8px; align-items:center; flex-wrap:wrap;
+    padding:12px 0 4px; font-size:13px; color:var(--hint);
+  }
+  select, input[type="number"]{
+    font:inherit; font-size:14px; color:var(--text); background:var(--bg2);
+    border:1px solid var(--line); border-radius:9px; padding:7px 9px;
+    max-width:100%;
+  }
+
+  /* ---------- карточка квартиры ---------- */
+  .card{
+    background:var(--bg2); border-radius:var(--radius); overflow:hidden;
+    margin:12px 0; border:1px solid var(--line);
+  }
+  .card .photo{
+    width:100%; max-width:100%; aspect-ratio:16/10; object-fit:cover;
+    display:block; background:var(--line);
+  }
+  .card .body{padding:11px 13px 13px}
+  .card .price{font-size:19px; font-weight:700; letter-spacing:-.2px}
+  .card .per{font-size:13px; font-weight:400; color:var(--hint)}
+  .card .where{font-size:14px; color:var(--hint); margin:1px 0 8px}
+  .card h3{margin:0 0 8px; font-size:14px; font-weight:500; line-height:1.35}
+
+  /* Характеристики — значками: так они влезают в строку на узком экране. */
+  .specs{display:flex; flex-wrap:wrap; gap:6px; margin-bottom:10px}
+  .chip{
+    background:var(--bg); border:1px solid var(--line); border-radius:7px;
+    padding:3px 8px; font-size:12.5px; white-space:nowrap;
+  }
+  .chip.on{border-color:var(--btn); color:var(--btn)}
+  .open{
+    display:block; text-align:center; text-decoration:none;
+    background:var(--btn); color:var(--btn-text);
+    padding:10px; border-radius:10px; font-weight:600; font-size:14px;
+  }
+  .star{color:#f0a020}
+  .meta{font-size:11.5px; color:var(--hint); margin-top:8px; text-align:center}
+
+  /* ---------- форма фильтров ---------- */
+  .field{padding:13px 0; border-bottom:1px solid var(--line)}
+  .field:last-of-type{border-bottom:0}
+  .field label{display:block; font-weight:600; font-size:14px; margin-bottom:7px}
+  .range{display:flex; align-items:center; gap:8px}
+  .range input{width:100%; min-width:0}
+  .range span{color:var(--hint); font-size:13px; flex:none}
+  .hint{font-size:12.5px; color:var(--hint); margin-top:6px; line-height:1.4}
+
+  /* Переключатель «да/нет» — две кнопки вместо галочки: пальцем попасть проще. */
+  .toggle{display:flex; gap:6px}
+  .toggle button{
+    flex:1; padding:9px; border:1px solid var(--line); border-radius:9px;
+    background:var(--bg2); color:var(--text); font:inherit; font-size:14px;
+    cursor:pointer;
+  }
+  .toggle button[aria-pressed="true"]{
+    background:var(--btn); color:var(--btn-text); border-color:var(--btn);
+  }
+
+  .note{
+    background:var(--bg2); border:1px solid var(--line); border-radius:var(--radius);
+    padding:13px; font-size:13.5px; color:var(--hint); line-height:1.5; margin:14px 0;
+  }
+  .empty{text-align:center; padding:48px 20px; color:var(--hint)}
+  .empty b{display:block; color:var(--text); font-size:16px; margin-bottom:6px}
+  [hidden]{display:none !important}
+  /* Запасная кнопка: вне Telegram нативной MainButton не существует. */
+  #save-fallback{
+    width:100%; padding:13px; margin:16px 0; border:0; border-radius:11px;
+    background:var(--btn); color:var(--btn-text); font:inherit; font-weight:600;
+    font-size:15px; cursor:pointer;
+  }
+</style>
+</head>
+<body>
+
+<div class="tabs" role="tablist">
+  <button class="tab" id="tab-list"    role="tab" aria-selected="true"  aria-controls="view-list">🏠 Квартиры</button>
+  <button class="tab" id="tab-filters" role="tab" aria-selected="false" aria-controls="view-filters">⚙️ Фильтры</button>
+</div>
+
+<!-- ================= ВИТРИНА ================= -->
+<section class="wrap" id="view-list" role="tabpanel">
+  <div class="bar">
+    <span>Сортировка</span>
+    <select id="sort">
+      <option value="new">сначала новые</option>
+      <option value="cheap">сначала дешёвые</option>
+      <option value="rich">сначала дорогие</option>
+    </select>
+    <label style="display:flex;align-items:center;gap:5px;cursor:pointer">
+      <input type="checkbox" id="only-furn"> только меблированные
+    </label>
+  </div>
+  <div id="cards"></div>
+</section>
+
+<!-- ================= ФИЛЬТРЫ ================= -->
+<section class="wrap" id="view-filters" role="tabpanel" hidden>
+  <div class="field">
+    <label>💰 Цена, ZAR в месяц</label>
+    <div class="range">
+      <input type="number" id="min_price" min="0" step="500" inputmode="numeric">
+      <span>—</span>
+      <input type="number" id="max_price" min="0" step="500" inputmode="numeric">
+    </div>
+    <div class="hint">0 слева — без нижней границы.</div>
+  </div>
+
+  <div class="field">
+    <label>🛏 Спальни</label>
+    <div class="range">
+      <input type="number" id="min_bedrooms" min="0" max="9" inputmode="numeric">
+      <span>—</span>
+      <input type="number" id="max_bedrooms" min="0" max="9" inputmode="numeric">
+    </div>
+  </div>
+
+  <div class="field">
+    <label>🚿 Санузлы</label>
+    <div class="range">
+      <input type="number" id="min_bathrooms" min="0" max="9" inputmode="numeric">
+      <span>—</span>
+      <input type="number" id="max_bathrooms" min="0" max="9" inputmode="numeric">
+    </div>
+  </div>
+
+  <div class="field">
+    <label>🅿 Парковка обязательна?</label>
+    <div class="toggle" id="require_parking">
+      <button type="button" data-v="1">Да</button>
+      <button type="button" data-v="0">Не важно</button>
+    </div>
+    <div class="range" id="parking-range" style="margin-top:9px">
+      <input type="number" id="min_parking" min="0" max="9" inputmode="numeric">
+      <span>—</span>
+      <input type="number" id="max_parking" min="0" max="9" inputmode="numeric">
+    </div>
+    <div class="hint">При «Да» объявления без указанной парковки отсеиваются.</div>
+  </div>
+
+  <div class="field">
+    <label>🛋 Только меблированные?</label>
+    <div class="toggle" id="furnished_only">
+      <button type="button" data-v="1">Да</button>
+      <button type="button" data-v="0">Любые</button>
+    </div>
+    <div class="hint">Если статус мебели в объявлении не указан — оно всё равно придёт.</div>
+  </div>
+
+  <div class="field">
+    <label>📅 Срок аренды, месяцев</label>
+    <input type="number" id="lease_months" min="0" max="60" inputmode="numeric" style="width:100%">
+    <div class="hint">0 — срок не проверять.</div>
+  </div>
+
+  <button id="save-fallback" hidden>Сохранить фильтры</button>
+
+  <div class="note">
+    Настройки применятся при следующем прогоне поиска. То же самое можно сделать
+    командами в чате — <b>/статус</b> покажет, что стоит сейчас.
+  </div>
+</section>
+
+<script>
+"use strict";
+
+// tg === null, когда страницу открыли не из Telegram, а просто в браузере.
+// Весь код ниже это учитывает: мини-апп должен оставаться отлаживаемым.
+var tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+if (tg) { tg.ready(); tg.expand(); }
+
+function $(id) { return document.getElementById(id); }
+
+// Данные лежат на уровень выше самой страницы (webapp/ внутри репозитория).
+// Метка времени в адресе обязательна: GitHub Pages кеширует ответы надолго,
+// и без неё мини-апп ещё сутки показывал бы вчерашние квартиры.
+var DATA = "../listings.json";
+var CONF = "../config.json";
+
+var DEFAULTS = {
+  min_price: 0, max_price: 20000,
+  min_bedrooms: 1, max_bedrooms: 2,
+  min_bathrooms: 1, max_bathrooms: 2,
+  min_parking: 1, max_parking: 2,
+  require_parking: true, furnished_only: true, lease_months: 12
+};
+
+var listings = [];
+var config = Object.assign({}, DEFAULTS);
+
+/* ---------------- вкладки ---------------- */
+function showTab(which) {
+  var isList = which === "list";
+  $("tab-list").setAttribute("aria-selected", isList);
+  $("tab-filters").setAttribute("aria-selected", !isList);
+  $("view-list").hidden = !isList;
+  $("view-filters").hidden = isList;
+  // Нативная кнопка Telegram нужна только на вкладке фильтров: на витрине
+  // сохранять нечего, а висящая внизу кнопка сбивала бы с толку.
+  if (tg && tg.MainButton) {
+    if (isList) { tg.MainButton.hide(); } else { tg.MainButton.show(); }
+  }
+  window.scrollTo(0, 0);
+}
+$("tab-list").onclick = function () { showTab("list"); };
+$("tab-filters").onclick = function () { showTab("filters"); };
+
+/* ---------------- витрина ---------------- */
+function money(n) {
+  // Пробел вместо запятой: «R15 495» читается привычнее, чем «R15,495».
+  return "R" + String(n || 0).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+function when(iso) {
+  if (!iso) return "";
+  var days = Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  if (days <= 0) return "сегодня";
+  if (days === 1) return "вчера";
+  if (days < 7) return days + " дн. назад";
+  return new Date(iso).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
+}
+
+// Тексты приходят с чужих сайтов — вставлять их в разметку как есть нельзя:
+// кавычка или угловая скобка в заголовке объявления сломала бы страницу.
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function cardHTML(x) {
+  var furn = x.furnished === true ? "меблир."
+           : x.furnished === false ? "без мебели" : "мебель н/д";
+  var parts = [
+    x.bedrooms ? x.bedrooms + " спал." : "спальни н/д",
+    x.bathrooms ? x.bathrooms + " с/у" : "с/у н/д",
+    x.parking ? x.parking + " парк." : "парковка н/д"
+  ];
+  if (x.lease_months) parts.push(x.lease_months + " мес.");
+
+  var chips = parts.map(function (t) {
+    return '<span class="chip">' + esc(t) + "</span>";
+  }).join("");
+  var furnChip = '<span class="chip' + (x.furnished === true ? " on" : "") + '">'
+               + furn + "</span>";
+
+  // Битую ссылку на фото просто убираем — пустая рамка выглядит хуже,
+  // чем карточка вовсе без картинки.
+  var photo = x.image
+    ? '<img class="photo" src="' + esc(x.image) + '" alt="" loading="lazy" onerror="this.remove()">'
+    : "";
+  var src = x.source === "privateproperty" ? "Private Property" : "Property24";
+  var star = x.furnished === true ? '<span class="star">⭐</span> ' : "";
+
+  return '<article class="card">' + photo
+    + '<div class="body">'
+    + '<div class="price">' + star + money(x.price) + '<span class="per">/мес</span></div>'
+    + '<div class="where">' + esc(x.suburb || "район н/д")
+    + (x.property_type ? " · " + esc(x.property_type) : "") + "</div>"
+    + "<h3>" + esc(String(x.title || "").slice(0, 110)) + "</h3>"
+    + '<div class="specs">' + furnChip + chips + "</div>"
+    + '<a class="open" href="' + esc(x.url) + '" data-url="' + esc(x.url) + '">Открыть объявление</a>'
+    + '<div class="meta">' + src + " · найдено " + when(x.found_at) + "</div>"
+    + "</div></article>";
+}
+
+function renderList() {
+  var rows = listings.slice();
+  if ($("only-furn").checked) {
+    rows = rows.filter(function (x) { return x.furnished === true; });
+  }
+
+  var mode = $("sort").value;
+  if (mode === "cheap") {
+    rows.sort(function (a, b) { return (a.price || 0) - (b.price || 0); });
+  } else if (mode === "rich") {
+    rows.sort(function (a, b) { return (b.price || 0) - (a.price || 0); });
+  } else {
+    rows.sort(function (a, b) {
+      return String(b.found_at || "").localeCompare(String(a.found_at || ""));
+    });
+  }
+
+  var box = $("cards");
+  if (!rows.length) {
+    box.innerHTML = '<div class="empty"><b>Пока пусто</b>'
+      + "Квартиры появятся здесь после ближайшего прогона поиска. "
+      + "Проверьте фильтры на соседней вкладке — возможно, они слишком узкие.</div>";
+    return;
+  }
+  box.innerHTML = rows.map(cardHTML).join("");
+}
+
+// Ссылку наружу открываем через Telegram: иначе сайт откроется внутри
+// мини-аппа, в тесном окне без адресной строки и кнопки «назад».
+$("cards").addEventListener("click", function (e) {
+  var a = e.target.closest("a[data-url]");
+  if (!a) return;
+  if (tg && tg.openLink) { e.preventDefault(); tg.openLink(a.getAttribute("data-url")); }
+});
+$("sort").onchange = renderList;
+$("only-furn").onchange = renderList;
+
+/* ---------------- фильтры ---------------- */
+var NUMS = ["min_price", "max_price", "min_bedrooms", "max_bedrooms",
+            "min_bathrooms", "max_bathrooms", "min_parking", "max_parking",
+            "lease_months"];
+
+function setToggle(id, value) {
+  var btns = $(id).querySelectorAll("button");
+  for (var i = 0; i < btns.length; i++) {
+    btns[i].setAttribute("aria-pressed", String((btns[i].dataset.v === "1") === !!value));
+  }
+}
+function getToggle(id) {
+  var on = $(id).querySelector('button[aria-pressed="true"]');
+  return !!on && on.dataset.v === "1";
+}
+
+["require_parking", "furnished_only"].forEach(function (id) {
+  $(id).addEventListener("click", function (e) {
+    var b = e.target.closest("button");
+    if (!b) return;
+    setToggle(id, b.dataset.v === "1");
+    if (id === "require_parking") syncParkingRange();
+    if (tg && tg.HapticFeedback) tg.HapticFeedback.selectionChanged();
+  });
+});
+
+function syncParkingRange() {
+  // Диапазон мест не нужен, когда парковка не обязательна — прячем,
+  // чтобы не спрашивать про то, что ни на что не повлияет.
+  $("parking-range").hidden = !getToggle("require_parking");
+}
+
+function fillForm() {
+  NUMS.forEach(function (k) {
+    $(k).value = (config[k] != null) ? config[k] : DEFAULTS[k];
+  });
+  setToggle("require_parking", config.require_parking);
+  setToggle("furnished_only", config.furnished_only);
+  syncParkingRange();
+}
+
+function readForm() {
+  var out = {};
+  NUMS.forEach(function (k) {
+    var n = parseInt($(k).value, 10);
+    out[k] = (isFinite(n) && n >= 0) ? n : DEFAULTS[k];
+  });
+  // Перепутанные местами границы — обычная опечатка, а не повод ругаться:
+  // молча меняем их местами.
+  [["min_price", "max_price"], ["min_bedrooms", "max_bedrooms"],
+   ["min_bathrooms", "max_bathrooms"], ["min_parking", "max_parking"]
+  ].forEach(function (pair) {
+    if (out[pair[0]] > out[pair[1]]) {
+      var t = out[pair[0]]; out[pair[0]] = out[pair[1]]; out[pair[1]] = t;
+    }
+  });
+  out.require_parking = getToggle("require_parking");
+  out.furnished_only = getToggle("furnished_only");
+  return out;
+}
+
+function save() {
+  var data = readForm();
+  data.t = "filters";          // метка типа: бот по ней узнаёт формат
+  if (!tg || !tg.sendData) {
+    alert("Сохранение работает только внутри Telegram.\n\n" + JSON.stringify(data, null, 1));
+    return;
+  }
+  if (tg.HapticFeedback) tg.HapticFeedback.impactOccurred("medium");
+  // sendData отправляет строку боту и сразу закрывает мини-апп —
+  // подтверждение пользователь увидит уже сообщением в чате.
+  tg.sendData(JSON.stringify(data));
+}
+$("save-fallback").onclick = save;
+
+if (tg && tg.MainButton) {
+  tg.MainButton.setText("Сохранить фильтры");
+  tg.MainButton.onClick(save);
+} else {
+  $("save-fallback").hidden = false;   // в браузере показываем обычную кнопку
+}
+
+/* ---------------- загрузка данных ---------------- */
+function grab(url, fallback) {
+  return fetch(url + "?v=" + Date.now(), { cache: "no-store" })
+    .then(function (r) {
+      if (!r.ok) throw new Error(String(r.status));
+      return r.json();
+    })
+    .catch(function (e) {
+      console.warn("не прочитал", url, e);
+      return fallback;
+    });
+}
+
+Promise.all([grab(DATA, []), grab(CONF, {})]).then(function (res) {
+  listings = Array.isArray(res[0]) ? res[0] : [];
+  config = Object.assign({}, DEFAULTS, res[1]);
+  fillForm();
+  renderList();
+  showTab("list");
+});
+</script>
+</body>
+</html>

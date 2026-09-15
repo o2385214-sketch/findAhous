@@ -9,3 +9,5 @@ control_daemon.log
 rental_heartbeat.txt
 rental_daemon.log
 *.lock
+crash.log
+*.bak-*

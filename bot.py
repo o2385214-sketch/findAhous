@@ -154,6 +154,12 @@ DANGEROUS_SUBURBS = {
 
 SEEN_FILE = Path(__file__).parent / "seen_listings.json"
 
+# Архив ОТПРАВЛЕННЫХ объявлений — со всеми полями, а не только id.
+# Нужен мини-аппу (webapp/index.html): он показывает эти карточки.
+# seen_listings.json для этого не годится — там одни идентификаторы.
+LISTINGS_FILE = Path(__file__).parent / "listings.json"
+LISTINGS_KEEP = 200   # сколько последних держим; старее — выбрасываем
+
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -227,6 +233,49 @@ def save_seen(seen: set) -> None:
     SEEN_FILE.write_text(json.dumps(sorted(seen)))
 
 
+def archive_listings(sent: list) -> None:
+    """Дописывает отправленные объявления в listings.json — витрину мини-аппа.
+    Новые идут первыми, дубли по id выкидываем, храним LISTINGS_KEEP последних.
+    Падать из-за витрины нельзя: рассылка важнее, поэтому ошибки глушим."""
+    if not sent:
+        return
+    try:
+        old = json.loads(LISTINGS_FILE.read_text(encoding="utf-8"))
+        if not isinstance(old, list):
+            old = []
+    except (OSError, json.JSONDecodeError):
+        old = []
+
+    stamp = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds")
+    fresh = []
+    for x in sent:
+        fresh.append({
+            "id": x["id"],
+            "url": x["url"],
+            "title": x.get("title") or "",
+            "suburb": x.get("suburb") or "",
+            "price": x.get("price") or 0,
+            "bedrooms": x.get("bedrooms") or 0,
+            "bathrooms": x.get("bathrooms") or 0,
+            "parking": x.get("parking") or 0,
+            "furnished": x.get("furnished"),
+            "lease_months": x.get("lease_months"),
+            "property_type": x.get("property_type") or "",
+            "image": x.get("image") or "",
+            "source": "privateproperty" if x.get("source") == "privateproperty" else "property24",
+            "found_at": stamp,
+        })
+
+    new_ids = {x["id"] for x in fresh}
+    merged = fresh + [x for x in old if x.get("id") not in new_ids]
+    try:
+        LISTINGS_FILE.write_text(
+            json.dumps(merged[:LISTINGS_KEEP], ensure_ascii=False, indent=1),
+            encoding="utf-8")
+    except OSError as e:
+        print(f"не смог записать {LISTINGS_FILE.name}: {e}")
+
+
 def send_telegram(text: str) -> None:
     """Шлёт объявление ВСЕМ получателям из CHAT_IDS. Сбой у одного получателя
     (например, сотрудник заблокировал бота) не мешает остальным получить
@@ -252,6 +301,20 @@ def send_telegram(text: str) -> None:
                 print(f"Telegram error для {chat_id}:", resp.status_code, resp.text)
         except requests.RequestException as e:
             print(f"Telegram не отправлено для {chat_id}: {e}")
+
+
+def card_image(card) -> str:
+    """Ссылка на фото из карточки объявления. Сайты грузят картинки лениво,
+    поэтому настоящий адрес часто лежит не в src, а в data-src/data-lazy —
+    в src при этом стоит заглушка-пиксель. Берём первый годный вариант."""
+    for img in card.find_all("img"):
+        for attr in ("data-src", "data-lazy", "data-original", "src"):
+            u = (img.get(attr) or "").strip()
+            if u.startswith("//"):
+                u = "https:" + u
+            if u.startswith("http") and not u.endswith(".svg") and "placeholder" not in u.lower():
+                return u
+    return ""
 
 
 def parse_price(text: str):
@@ -323,6 +386,7 @@ COMMERCIAL_HINTS = ("commercial", "office", "retail", "industrial", "warehouse",
 _EMPTY_DETAILS = {
     "lease_months": None, "furnished": None, "property_type": None,
     "parking": None, "bathrooms": None, "bedrooms": None, "commercial": False,
+    "image": "",
     # ok=False означает «страницу объявления скачать НЕ удалось» (503/таймаут).
     # Это надо отличать от «страницу прочли, но поля пустые»: в первом случае
     # объявление нельзя ни отправить, ни похоронить в seen — только отложить.
@@ -378,7 +442,15 @@ def fetch_details(url: str):
         d["ok"] = False
         return d
 
-    text = BeautifulSoup(resp.text, "html.parser").get_text(" ", strip=True)
+    soup = BeautifulSoup(resp.text, "html.parser")
+    text = soup.get_text(" ", strip=True)
+
+    # Фото: og:image — то самое крупное изображение, что показывает соцсетям
+    # предпросмотр ссылки. Страница уже скачана, лишних запросов не делаем.
+    og = soup.find("meta", property="og:image")
+    image = (og.get("content") or "").strip() if og else ""
+    if not image:
+        image = card_image(soup)
 
     lease_months = None
     m = re.search(r"Lease Period\D{0,15}?(\d+)\s*month", text, re.IGNORECASE)
@@ -424,6 +496,7 @@ def fetch_details(url: str):
         "bathrooms": bathrooms,
         "bedrooms": bedrooms,
         "commercial": commercial,
+        "image": image,
     }
 
 
@@ -512,6 +585,7 @@ def fetch_page(category: str, url: str):
                 "parking": parking,
                 "title": title.strip(),
                 "url": full_url,
+                "image": card_image(card),
             }
         )
 
@@ -602,6 +676,7 @@ def fetch_privateproperty():
                 "parking": parking,
                 "title": f"{(ptype or 'жильё').capitalize()} в {prettify_suburb(suburb_slug)}",
                 "url": "https://www.privateproperty.co.za" + href,
+                "image": card_image(a),
             })
         time.sleep(2)
     print(f"[privateproperty] найдено подходящих: {len(results)}")
@@ -727,6 +802,8 @@ def run_once():
         # тип: со страницы объявления, иначе — по категории поиска
         listing["property_type"] = details["property_type"] or listing["category"]
         listing["priority"] = listing["property_type"] in PRIORITY_TYPES
+        if not listing.get("image"):
+            listing["image"] = details.get("image") or ""
 
         print(f"  ✓ ПОДХОДИТ {listing['property_type']} {listing['suburb']} "
               f"R{listing['price']} bed={bedrooms} bath={listing['bathrooms']} "
@@ -765,6 +842,7 @@ def run_once():
             seen.add(listing["id"])
             time.sleep(1)
         save_seen(seen)
+        archive_listings(to_send)   # витрина мини-аппа
         extra = len(new_listings) - len(to_send)
         print(f"Отправлено: {len(to_send)}" + (f" (ещё в очереди: {extra})" if extra else ""))
     else:

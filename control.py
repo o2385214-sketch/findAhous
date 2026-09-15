@@ -26,13 +26,19 @@ CHAT_IDS = [c for c in re.split(r"[,;\s]+", TELEGRAM_CHAT_ID) if c]
 ADMIN_CHAT_ID = CHAT_IDS[0] if CHAT_IDS else ""
 
 # Команды, доступные всем получателям, а не только владельцу.
-READONLY_COMMANDS = {"статус", "status", "помощь", "help", "start"}
+READONLY_COMMANDS = {"статус", "status", "помощь", "help", "start", "приложение", "app"}
 
 HERE = Path(__file__).parent
 CONFIG_FILE = HERE / "config.json"
 STATE_FILE = HERE / "tg_state.json"
 
 API = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}"
+
+# Мини-апп (webapp/index.html) раздаётся с GitHub Pages этого же репозитория.
+# Telegram открывает ТОЛЬКО https — локальный файл или
+# http-адрес он молча проигнорирует.
+WEBAPP_URL = os.environ.get(
+    "WEBAPP_URL", "https://o2385214-sketch.github.io/findAhous/webapp/")
 
 DEFAULTS = {
     "min_price": 0,
@@ -58,9 +64,21 @@ HELP = (
     "/мебель вкл — только меблированные\n"
     "/мебель выкл — любые\n"
     "/срок 12 — срок аренды, мес. (0 — любой)\n"
-    "/сброс — вернуть настройки по умолчанию\n\n"
+    "/сброс — вернуть настройки по умолчанию\n"
+    "/приложение — открыть мини-апп: карточки квартир с фото "
+    "и те же фильтры кнопками\n\n"
     "💡 Можно слать несколько команд одним сообщением — каждую с новой строки:\n"
     "/цена 25000\n/комнаты 1 3\n/парковка выкл"
+)
+
+
+NOT_OWNER = ("🔒 Менять настройки поиска может только владелец.")
+
+APP_INTRO = (
+    "<b>Мини-апп готов</b>\n"
+    "Кнопка «Поиск жилья» внизу экрана откроет витрину "
+    "с фото и фильтры.\n"
+    "Если кнопки не видно — нажмите значок клавиатуры справа от поля ввода."
 )
 
 
@@ -83,21 +101,76 @@ def get_config():
     return cfg
 
 
-def send(text, chat_id=None):
+def send(text, chat_id=None, reply_markup=None):
     """Отвечаем ТОМУ, кто написал (chat_id), а не всегда владельцу — иначе
     сотрудник шлёт /статус, а ответ уходит владельцу, и оба в недоумении."""
     to = chat_id or ADMIN_CHAT_ID
     if not TELEGRAM_TOKEN or not to:
         print("нет TELEGRAM_TOKEN / TELEGRAM_CHAT_ID — не отвечаю")
         return
+    payload = {"chat_id": to, "text": text, "parse_mode": "HTML"}
+    if reply_markup:
+        payload["reply_markup"] = json.dumps(reply_markup)
     try:
-        requests.post(
-            f"{API}/sendMessage",
-            data={"chat_id": to, "text": text, "parse_mode": "HTML"},
-            timeout=15,
-        )
+        requests.post(f"{API}/sendMessage", data=payload, timeout=15)
     except requests.RequestException as e:
         print("sendMessage error:", e)
+
+
+def webapp_keyboard():
+    """Кнопка запуска мини-аппа. Именно reply-клавиатура (нижняя), а не inline:
+    Telegram разрешает мини-аппу слать данные боту (sendData) ТОЛЬКО когда тот
+    открыт отсюда. Из inline-кнопки фильтры бы не сохранялись — открылась бы
+    красивая страница, а кнопка «Сохранить» молча ничего не делала."""
+    return {
+        "keyboard": [[{"text": "🏠 Поиск жилья",
+                       "web_app": {"url": WEBAPP_URL}}]],
+        "resize_keyboard": True,
+        "is_persistent": True,
+    }
+
+
+# Границы «здравого смысла» для значений из мини-аппа.
+WEBAPP_LIMITS = {
+    "min_price": (0, 500000), "max_price": (0, 500000),
+    "min_bedrooms": (0, 9), "max_bedrooms": (0, 9),
+    "min_bathrooms": (0, 9), "max_bathrooms": (0, 9),
+    "min_parking": (0, 9), "max_parking": (0, 9),
+    "lease_months": (0, 60),
+}
+
+PAIRS = (("min_price", "max_price"), ("min_bedrooms", "max_bedrooms"),
+         ("min_bathrooms", "max_bathrooms"), ("min_parking", "max_parking"))
+
+
+def apply_webapp(raw, cfg):
+    """Фильтры, присланные мини-аппом через sendData.
+
+    Страница выполняется на телефоне пользователя, и её содержимое при желании
+    подменяется — поэтому ничему из неё не верим на слово: каждое число
+    зажимаем в допустимый диапазон, неизвестные ключи выбрасываем."""
+    try:
+        data = json.loads(raw)
+    except (TypeError, ValueError):
+        return False, "Не разобрал данные из мини-аппа — настройки не менял."
+    if not isinstance(data, dict) or data.get("t") != "filters":
+        return False, "Не разобрал данные из мини-аппа — настройки не менял."
+
+    for key, (lo, hi) in WEBAPP_LIMITS.items():
+        if key not in data:
+            continue
+        try:
+            cfg[key] = max(lo, min(hi, int(data[key])))
+        except (TypeError, ValueError):
+            pass
+    for key in ("require_parking", "furnished_only"):
+        if key in data:
+            cfg[key] = bool(data[key])
+    for lo_k, hi_k in PAIRS:   # границы могли приехать перевёрнутыми
+        if cfg[lo_k] > cfg[hi_k]:
+            cfg[lo_k], cfg[hi_k] = cfg[hi_k], cfg[lo_k]
+
+    return True, "✅ Фильтры из мини-аппа сохранены.\n\n" + status_text(cfg)
 
 
 def status_text(cfg):
@@ -235,15 +308,27 @@ def main():
         msg = upd.get("message") or upd.get("edited_message")
         if not msg:
             continue
-        text = msg.get("text", "") or ""
-        if "/" not in text:
-            continue
         chat_id = str(msg.get("chat", {}).get("id", ""))
+        # Мини-апп шлёт настройки не текстом, а отдельным полем
+        # web_app_data — обычная проверка на "/" его бы не пропустила.
+        webapp = msg.get("web_app_data")
+        text = msg.get("text", "") or ""
+        if not webapp and "/" not in text:
+            continue
         if CHAT_IDS and chat_id not in CHAT_IDS:
             print(f"игнор команды из чужого чата {chat_id}")
             note_unknown(chat_id, msg, state)
             continue
         is_admin = chat_id == ADMIN_CHAT_ID
+
+        if webapp:
+            if not is_admin:
+                send(NOT_OWNER, chat_id)
+                continue
+            ok, reply = apply_webapp(webapp.get("data", ""), cfg)
+            changed = changed or ok
+            send(reply, chat_id)
+            continue
 
         # одно сообщение может содержать несколько команд (по строкам или подряд):
         # "/цена 25000 /комнаты 1 3" -> ["/цена 25000 ", "/комнаты 1 3"]
@@ -251,11 +336,15 @@ def main():
         replies = []
         msg_changed = False
         denied = False
+        want_app = False
         for c in commands:
             head = c.strip().split()
             name = head[0].lower().lstrip("/").split("@")[0] if head else ""
             if not is_admin and name not in READONLY_COMMANDS:
                 denied = True
+                continue
+            if name in ("приложение", "app"):
+                want_app = True   # ответим клавиатурой, а не текстом
                 continue
             ch, rep = apply_command(c, cfg)
             if ch:
@@ -270,6 +359,8 @@ def main():
             replies.append("✅ Готово, применю при следующем поиске.\n\n" + status_text(cfg))
         if replies:
             send("\n\n".join(replies), chat_id)
+        if want_app:
+            send(APP_INTRO, chat_id, webapp_keyboard())
 
     if changed:
         save_json(CONFIG_FILE, cfg)
